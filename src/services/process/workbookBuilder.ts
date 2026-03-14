@@ -110,7 +110,7 @@ function applyAutoColumnWidth(worksheet: XLSX.WorkSheet, matrix: string[][], hea
   }));
 }
 
-function applyCellStyles(worksheet: XLSX.WorkSheet, headerRowIndex: number): void {
+function applyCellStyles(worksheet: XLSX.WorkSheet, headerRowIndex: number, titleEnabled: boolean): void {
   const ref = worksheet["!ref"];
   if (!ref) {
     return;
@@ -126,13 +126,20 @@ function applyCellStyles(worksheet: XLSX.WorkSheet, headerRowIndex: number): voi
       }
 
       const isHeader = row === headerRowIndex;
+      const isTitle = titleEnabled && row === 0;
       cell.s = {
         alignment: {
           horizontal: "center",
           vertical: "center",
           wrapText: true,
         },
-        ...(isHeader
+        border: {
+          top: { style: "thin", color: { rgb: "000000" } },
+          right: { style: "thin", color: { rgb: "000000" } },
+          bottom: { style: "thin", color: { rgb: "000000" } },
+          left: { style: "thin", color: { rgb: "000000" } },
+        },
+        ...(isHeader || isTitle
           ? {
               font: {
                 bold: true,
@@ -155,7 +162,7 @@ export function buildWorkbookBinary(engineOutput: EngineOutput): Uint8Array {
     const sheetBuild = buildSheetMatrix(sheet);
     const worksheet = XLSX.utils.aoa_to_sheet(sheetBuild.matrix);
     applyAutoColumnWidth(worksheet, sheetBuild.matrix, sheet.headers.length);
-    applyCellStyles(worksheet, sheetBuild.headerRowIndex);
+    applyCellStyles(worksheet, sheetBuild.headerRowIndex, sheet.titleEnabled);
     applySheetMerges(worksheet, sheet);
     XLSX.utils.book_append_sheet(workbook, worksheet, sheet.name);
   }
