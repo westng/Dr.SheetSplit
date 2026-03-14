@@ -13,7 +13,7 @@ export default {
     menu: "Menu",
     history: "History",
     clearHistory: "Clear",
-    account: "Daily Doctor",
+    account: "Dr.ProDaily",
     process: {
       title: "Process Table",
       description: "Start a new split task",
