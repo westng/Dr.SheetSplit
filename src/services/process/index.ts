@@ -27,5 +27,6 @@ export async function runProcessTask(
     outputPath,
     sheetCount: engineOutput.sheetCount,
     rowCount: engineOutput.rowCount,
+    engineOutput,
   };
 }

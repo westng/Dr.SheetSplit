@@ -53,4 +53,5 @@ export type ProcessTaskResult = {
   outputPath: string;
   sheetCount: number;
   rowCount: number;
+  engineOutput: EngineOutput;
 };

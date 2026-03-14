@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { runProcessTask } from "../../services/process";
 import type { ProcessTaskStage } from "../../services/process/types";
-import { useMappingStore, useRuleStore } from "../../store";
+import type { CreateTaskHistoryInput, TaskHistoryLogItem } from "../../types/history";
+import { useHistoryStore, useMappingStore, useRuleStore } from "../../store";
 import { useImportSettings } from "../../composables/useImportSettings";
 import { parseSpreadsheetFile, type SpreadsheetPreview, type SpreadsheetSheetPreview } from "../../utils/spreadsheetParser";
 import { validateRuleCompatibility } from "../../utils/ruleValidator";
@@ -11,6 +12,7 @@ import { validateRuleCompatibility } from "../../utils/ruleValidator";
 const { t } = useI18n();
 const { rules, isRuleStoreReady } = useRuleStore();
 const { mappingGroups } = useMappingStore();
+const { recordTask } = useHistoryStore();
 const { allowedImportAccept, allowedImportDisplay, isAllowedImportFile } = useImportSettings();
 
 const sourceFileInputRef = ref<HTMLInputElement | null>(null);
@@ -23,7 +25,7 @@ const isDragOver = ref(false);
 const loadError = ref("");
 const runMessage = ref("");
 const isProcessing = ref(false);
-const processLogs = ref<{ id: string; level: "info" | "success" | "error"; time: string; message: string }[]>([]);
+const processLogs = ref<TaskHistoryLogItem[]>([]);
 
 const selectedRule = computed(() => rules.value.find((item) => item.id === selectedRuleId.value) ?? null);
 const selectedSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
@@ -132,6 +134,19 @@ function appendProcessLog(message: string, level: "info" | "success" | "error" =
 
 function clearProcessLogs(): void {
   processLogs.value = [];
+}
+
+function snapshotProcessLogs(): TaskHistoryLogItem[] {
+  return processLogs.value.map((item) => ({ ...item }));
+}
+
+async function persistTaskHistory(input: CreateTaskHistoryInput): Promise<void> {
+  try {
+    await recordTask(input);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error ?? "");
+    appendProcessLog(t("workspace.messages.historyPersistFailed", { reason: reason || "-" }), "error");
+  }
 }
 
 function resolveStageMessage(stage: ProcessTaskStage): string {
@@ -311,6 +326,11 @@ async function handleStartProcess(): Promise<void> {
     return;
   }
 
+  const startedAtMs = Date.now();
+  const historyRuleName = selectedRule.value.name || t("rules.library.unnamed");
+  const historySourceFileName = sourceFileName.value || sourcePreview.value?.fileName || "source.xlsx";
+  const historySourceSheetName = selectedSheetPreview.value.name;
+
   isProcessing.value = true;
   clearProcessLogs();
   runMessage.value = t("workspace.messages.processing");
@@ -327,11 +347,11 @@ async function handleStartProcess(): Promise<void> {
       rule: selectedRule.value,
       mappingGroups: [...mappingGroups.value],
       sheet: {
-        name: selectedSheetPreview.value.name,
+        name: historySourceSheetName,
         headers: [...selectedSheetPreview.value.headers],
         rows: selectedSheetPreview.value.rows.map((row) => ({ ...row })),
       },
-      sourceFileName: sourceFileName.value || sourcePreview.value?.fileName || "source.xlsx",
+      sourceFileName: historySourceFileName,
       exportDirectory: resolveExportDirectory(),
       unmatchedFallback: "未知错误",
     }, {
@@ -346,11 +366,50 @@ async function handleStartProcess(): Promise<void> {
       rows: result.rowCount,
     });
     appendProcessLog(runMessage.value, "success");
+
+    const finishedAtMs = Date.now();
+    await persistTaskHistory({
+      status: "success",
+      ruleId: selectedRule.value.id,
+      ruleName: historyRuleName,
+      sourceFileName: historySourceFileName,
+      sourceSheetName: historySourceSheetName,
+      outputPath: result.outputPath,
+      sheetCount: result.sheetCount,
+      rowCount: result.rowCount,
+      errorMessage: "",
+      resultPayload: {
+        outputPath: result.outputPath,
+        engineOutput: result.engineOutput,
+      },
+      logs: snapshotProcessLogs(),
+      startedAtMs,
+      finishedAtMs,
+      durationMs: Math.max(0, finishedAtMs - startedAtMs),
+    });
   } catch (error) {
     runMessage.value = "";
     const reason = toErrorMessage(error);
     loadError.value = t("workspace.messages.processFailed", { reason });
     appendProcessLog(t("workspace.messages.logFailed", { reason }), "error");
+
+    const finishedAtMs = Date.now();
+    await persistTaskHistory({
+      status: "failed",
+      ruleId: selectedRule.value.id,
+      ruleName: historyRuleName,
+      sourceFileName: historySourceFileName,
+      sourceSheetName: historySourceSheetName,
+      outputPath: "",
+      sheetCount: 0,
+      rowCount: 0,
+      errorMessage: reason,
+      resultPayload: null,
+      logs: snapshotProcessLogs(),
+      startedAtMs,
+      finishedAtMs,
+      durationMs: Math.max(0, finishedAtMs - startedAtMs),
+    });
   } finally {
     isProcessing.value = false;
   }

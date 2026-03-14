@@ -4,9 +4,10 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import ConfigPanel from "../components/config/ConfigPanel.vue";
+import HistoryDetailPanel from "../components/history/HistoryDetailPanel.vue";
 import MappingPanel from "../components/mapping/MappingPanel.vue";
 import WorkspacePanel from "../components/workspace/WorkspacePanel.vue";
-import { useLocaleStore, useUiStore } from "../store";
+import { useHistoryStore, useLocaleStore, useUiStore } from "../store";
 import {
   accentColors,
   appearanceOptions,
@@ -22,6 +23,7 @@ const appWindow = getCurrentWindow();
 const { t } = useI18n();
 const { activeHistoryId, activeMenu } = useUiStore();
 const { locale, localeOptions } = useLocaleStore();
+const { histories, clearHistory: clearHistoryStore } = useHistoryStore();
 
 const { sloganText } = useSlogan();
 const {
@@ -47,11 +49,7 @@ const {
 } = useUpdater();
 const GITHUB_REPO_URL = "https://github.com/westng/Dr.SheetSplit";
 
-const historyItems = ref([
-  { id: "latest", titleKey: "history.latest", time: "03/13 10:38" },
-  { id: "sales", titleKey: "history.sales", time: "03/12 22:11" },
-  { id: "finance", titleKey: "history.finance", time: "03/11 18:44" },
-]);
+const historyItems = computed(() => histories.value);
 const importFormatsText = ref("");
 const currentYear = new Date().getFullYear();
 const contentTitle = computed(() => {
@@ -76,6 +74,18 @@ function openGithubRepo(): void {
   void openUrl(GITHUB_REPO_URL);
 }
 
+function formatHistoryTime(timestampMs: number): string {
+  if (!timestampMs) {
+    return "-";
+  }
+  const date = new Date(timestampMs);
+  const m = `${date.getMonth() + 1}`.padStart(2, "0");
+  const d = `${date.getDate()}`.padStart(2, "0");
+  const hh = `${date.getHours()}`.padStart(2, "0");
+  const mm = `${date.getMinutes()}`.padStart(2, "0");
+  return `${m}/${d} ${hh}:${mm}`;
+}
+
 function handleTopDragFallback(event: MouseEvent): void {
   const target = event.target as HTMLElement | null;
   if (target?.closest('[data-no-drag="true"]')) {
@@ -88,8 +98,8 @@ function handleTopDragFallback(event: MouseEvent): void {
   void appWindow.startDragging();
 }
 
-function clearHistory(): void {
-  historyItems.value = [];
+async function clearHistory(): Promise<void> {
+  await clearHistoryStore();
   activeHistoryId.value = "";
 }
 
@@ -139,7 +149,7 @@ watch(allowedImportFormats, () => {
       <section class="nav-section">
         <h2>{{ $t("sidebar.menu") }}</h2>
         <button class="menu-card" :class="{ active: activeMenu === 'process' }" type="button"
-          @click="activeMenu = 'process'">
+          @click="activeMenu = 'process'; activeHistoryId = ''">
           <span class="menu-icon">+</span>
           <span class="menu-meta">
             <strong>{{ $t("sidebar.process.title") }}</strong>
@@ -182,9 +192,14 @@ watch(allowedImportFormats, () => {
           </li>
           <li v-for="item in historyItems" :key="item.id">
             <button type="button" class="history-card" :class="{ active: item.id === activeHistoryId }"
-              @click="activeHistoryId = item.id">
-              <span class="history-name">{{ $t(item.titleKey) }}</span>
-              <span class="history-time">{{ item.time }}</span>
+              @click="activeMenu = 'process'; activeHistoryId = item.id">
+              <span class="history-main">
+                <span class="history-name">{{ item.ruleName || $t("rules.library.unnamed") }}</span>
+                <span class="history-meta">
+                  {{ item.status === "success" ? $t("history.status.success") : $t("history.status.failed") }}
+                </span>
+              </span>
+              <span class="history-time">{{ formatHistoryTime(item.startedAtMs) }}</span>
             </button>
           </li>
         </ul>
@@ -355,7 +370,8 @@ watch(allowedImportFormats, () => {
       </section>
 
       <section v-else class="content-body">
-        <WorkspacePanel />
+        <HistoryDetailPanel v-if="activeHistoryId" :history-id="activeHistoryId" @back="activeHistoryId = ''" />
+        <WorkspacePanel v-else />
       </section>
     </main>
   </div>
@@ -619,9 +635,22 @@ watch(allowedImportFormats, () => {
   font-weight: 500;
 }
 
+.history-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+
+.history-meta {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
 .history-time {
   color: var(--text-muted);
   font-size: var(--fs-caption);
+  flex-shrink: 0;
 }
 
 .account-entry {
