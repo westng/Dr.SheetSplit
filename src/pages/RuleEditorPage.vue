@@ -485,25 +485,28 @@ onUnmounted(() => {
         <p>{{ $t("rules.messages.dbUnavailable", { reason: ruleStoreError }) }}</p>
       </section>
 
-      <section class="editor-group">
-        <h3>{{ $t("rules.editor.basicTitle") }}</h3>
-        <div class="editor-setting-row">
-          <span class="editor-setting-label">{{ $t("rules.fields.name") }}</span>
-          <label class="field-block">
-            <input v-model="draftRule.name" type="text" :disabled="!canEdit" />
-          </label>
-        </div>
-        <div class="editor-setting-row">
-          <span class="editor-setting-label">{{ $t("rules.fields.description") }}</span>
-          <label class="field-block">
-            <input v-model="draftRule.description" type="text" :disabled="!canEdit" />
-          </label>
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.basicTitle") }}</h3>
+        <div class="editor-group">
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.name") }}</span>
+            <label class="field-block">
+              <input v-model="draftRule.name" type="text" :disabled="!canEdit" />
+            </label>
+          </div>
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.description") }}</span>
+            <label class="field-block">
+              <input v-model="draftRule.description" type="text" :disabled="!canEdit" />
+            </label>
+          </div>
         </div>
       </section>
 
-      <section class="editor-group">
-        <h3>{{ $t("rules.editor.sourceTitle") }}</h3>
-        <div class="editor-setting-row">
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.sourceTitle") }}</h3>
+        <div class="editor-group">
+          <div class="editor-setting-row">
           <span class="editor-setting-label">{{ $t("rules.actions.uploadSource") }}</span>
           <div class="source-actions">
             <input
@@ -518,9 +521,9 @@ onUnmounted(() => {
             </button>
             <span class="source-file">{{ draftRule.sourceFileName || $t("rules.messages.noSourceFile") }}</span>
           </div>
-        </div>
+          </div>
 
-        <div class="editor-setting-row">
+          <div class="editor-setting-row">
           <span class="editor-setting-label">{{ $t("rules.fields.sourceSheet") }}</span>
           <label class="field-block">
             <select
@@ -534,9 +537,9 @@ onUnmounted(() => {
               </option>
             </select>
           </label>
-        </div>
+          </div>
 
-        <div class="header-wrap">
+          <div class="header-wrap">
           <span
             v-for="header in availableHeaders"
             :key="header"
@@ -547,9 +550,9 @@ onUnmounted(() => {
           <p v-if="availableHeaders.length === 0" class="hint-text">
             {{ $t("rules.messages.noHeaders") }}
           </p>
-        </div>
+          </div>
 
-        <div v-if="activeSheetPreview && activeSheetPreview.sampleRows.length > 0" class="sample-table-wrap">
+          <div v-if="activeSheetPreview && activeSheetPreview.sampleRows.length > 0" class="sample-table-wrap">
           <table class="sample-table">
             <thead>
               <tr>
@@ -565,12 +568,14 @@ onUnmounted(() => {
           <p class="hint-text">
             {{ $t("rules.messages.sampleRows", { count: activeSheetPreview.rowCount }) }}
           </p>
+          </div>
         </div>
       </section>
 
-      <section class="editor-group">
-        <h3>{{ $t("rules.editor.groupByTitle") }}</h3>
-        <div class="group-options">
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.groupByTitle") }}</h3>
+        <div class="editor-group">
+          <div class="group-options">
           <label v-for="header in availableHeaders" :key="header" class="group-option">
             <input
               type="radio"
@@ -589,18 +594,18 @@ onUnmounted(() => {
             />
             <span :title="header">{{ header }}</span>
           </label>
-        </div>
-        <div class="selected-fields">
+          </div>
+          <div class="selected-fields">
           <span v-for="field in draftRule.groupByFields" :key="field" class="selected-field-chip">
             {{ field }}
           </span>
           <p v-if="draftRule.groupByFields.length === 0" class="hint-text">
             {{ $t("rules.messages.groupByHint") }}
           </p>
-        </div>
+          </div>
 
-        <h4 class="sub-group-title">{{ $t("rules.fields.groupExclude") }}</h4>
-        <div class="mapping-config">
+          <h4 class="sub-group-title">{{ $t("rules.fields.groupExclude") }}</h4>
+          <div class="mapping-config">
           <select v-model="draftRule.groupExcludeMode" :disabled="!canEdit" @change="handleGroupExcludeModeChange">
             <option value="none">{{ $t("rules.messages.groupExcludeMode.none") }}</option>
             <option value="manual_values">{{ $t("rules.messages.groupExcludeMode.manual_values") }}</option>
@@ -624,10 +629,10 @@ onUnmounted(() => {
             </option>
           </select>
           <p class="hint-text">{{ $t("rules.messages.groupExcludeHint") }}</p>
-        </div>
+          </div>
 
-        <h4 class="sub-group-title">{{ $t("rules.fields.summaryGroupBy") }}</h4>
-        <div class="group-options">
+          <h4 class="sub-group-title">{{ $t("rules.fields.summaryGroupBy") }}</h4>
+          <div class="group-options">
           <label v-for="header in availableHeaders" :key="`summary-${header}`" class="group-option">
             <input
               type="checkbox"
@@ -644,20 +649,22 @@ onUnmounted(() => {
             />
             <span :title="header">{{ header }}</span>
           </label>
-        </div>
-        <div class="selected-fields">
+          </div>
+          <div class="selected-fields">
           <span v-for="field in draftRule.summaryGroupByFields" :key="`selected-summary-${field}`" class="selected-field-chip">
             {{ field }}
           </span>
           <p v-if="draftRule.summaryGroupByFields.length === 0" class="hint-text">
             {{ $t("rules.messages.summaryGroupByHint") }}
           </p>
+          </div>
         </div>
       </section>
 
-      <section class="editor-group">
-        <h3>{{ $t("rules.editor.outputTitle") }}</h3>
-        <table class="rule-table">
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.outputTitle") }}</h3>
+        <div class="editor-group">
+          <table class="rule-table">
           <thead>
             <tr>
               <th class="sort-col">#</th>
@@ -849,90 +856,95 @@ onUnmounted(() => {
               </td>
             </tr>
           </tbody>
-        </table>
+          </table>
 
-        <button type="button" class="secondary-btn" :disabled="!canEdit" @click="addOutputColumn">
+          <button type="button" class="secondary-btn" :disabled="!canEdit" @click="addOutputColumn">
           {{ $t("rules.actions.addField") }}
-        </button>
+          </button>
+        </div>
       </section>
 
-      <section class="editor-group">
-        <h3>{{ $t("rules.editor.sheetTemplateTitle") }}</h3>
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.sheetTemplateTitle") }}</h3>
+        <div class="editor-group">
 
-        <div class="editor-setting-row">
+          <div class="editor-setting-row">
           <span class="editor-setting-label">{{ $t("rules.fields.sheetTitleEnabled") }}</span>
-          <label class="toggle-row">
+          <label class="switch" :aria-label="$t('rules.fields.sheetTitleEnabled')">
             <input
               v-model="draftRule.sheetTemplate.titleEnabled"
               type="checkbox"
               :disabled="!canEdit"
               @change="handleTitleEnabledChange"
             />
+            <span class="switch-track">
+              <span class="switch-thumb" />
+            </span>
           </label>
-        </div>
+          </div>
 
-        <div class="editor-setting-row editor-setting-row-top">
-          <span class="editor-setting-label">{{ $t("rules.fields.titleTemplate") }}</span>
-          <div class="template-layout">
-            <label class="field-block template-editor">
-              <textarea
-                v-model="draftRule.sheetTemplate.titleTemplate"
-                rows="4"
-                :disabled="!canEdit"
-              />
-              <p class="hint-text">
+          <div class="editor-setting-row template-header-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.titleTemplate") }}</span>
+            <div class="template-header-panel">
+              <label class="field-block template-editor">
+                <input
+                  v-model="draftRule.sheetTemplate.titleTemplate"
+                  type="text"
+                  :disabled="!canEdit"
+                />
+              </label>
+              <p class="hint-text template-inline-hint">
                 {{
                   draftRule.sheetTemplate.titleEnabled
                     ? $t("rules.messages.titleTemplateHint")
                     : $t("rules.messages.titleTemplateEmpty")
                 }}
               </p>
-            </label>
-
-            <div class="template-variables">
-              <div class="template-variable-group">
-                <span class="template-variable-label">{{ $t("rules.fields.availableSourceVariables") }}</span>
-                <div class="template-variable-list">
-                  <button
-                    v-for="variableKey in sourceTemplateVariables"
-                    :key="`source-${variableKey}`"
-                    type="button"
-                    class="template-variable-chip"
-                    :disabled="!canEdit"
-                    @click="insertTitleVariable(variableKey)"
-                  >
-                    {{ variableKey }}
-                  </button>
-                </div>
-              </div>
-
-              <div class="template-variable-group">
-                <span class="template-variable-label">{{ $t("rules.fields.availableOutputVariables") }}</span>
-                <div class="template-variable-list">
-                  <button
-                    v-for="variableKey in outputTemplateVariables"
-                    :key="`output-${variableKey}`"
-                    type="button"
-                    class="template-variable-chip"
-                    :disabled="!canEdit"
-                    @click="insertTitleVariable(variableKey)"
-                  >
-                    {{ variableKey }}
-                  </button>
-                </div>
-              </div>
-
-              <p v-if="availableTemplateVariables.length === 0" class="hint-text">
-                {{ $t("rules.messages.noTemplateVariables") }}
-              </p>
-              <p v-else class="hint-text">
-                {{ $t("rules.messages.titleVariableHint") }}
-              </p>
             </div>
           </div>
-        </div>
 
-        <div class="editor-setting-row">
+          <div class="template-variables-full">
+            <div class="template-variable-group">
+              <span class="template-variable-label">{{ $t("rules.fields.availableSourceVariables") }}</span>
+              <div class="template-variable-list">
+                <button
+                  v-for="variableKey in sourceTemplateVariables"
+                  :key="`source-${variableKey}`"
+                  type="button"
+                  class="template-variable-chip"
+                  :disabled="!canEdit"
+                  @click="insertTitleVariable(variableKey)"
+                >
+                  {{ variableKey }}
+                </button>
+              </div>
+            </div>
+
+            <div class="template-variable-group">
+              <span class="template-variable-label">{{ $t("rules.fields.availableOutputVariables") }}</span>
+              <div class="template-variable-list">
+                <button
+                  v-for="variableKey in outputTemplateVariables"
+                  :key="`output-${variableKey}`"
+                  type="button"
+                  class="template-variable-chip"
+                  :disabled="!canEdit"
+                  @click="insertTitleVariable(variableKey)"
+                >
+                  {{ variableKey }}
+                </button>
+              </div>
+            </div>
+
+            <p v-if="availableTemplateVariables.length === 0" class="hint-text">
+              {{ $t("rules.messages.noTemplateVariables") }}
+            </p>
+            <p v-else class="hint-text">
+              {{ $t("rules.messages.titleVariableHint") }}
+            </p>
+          </div>
+
+          <div class="editor-setting-row">
           <span class="editor-setting-label">{{ $t("rules.fields.headerRowIndex") }}</span>
           <label class="field-block">
             <input
@@ -942,9 +954,9 @@ onUnmounted(() => {
               :disabled="!canEdit"
             />
           </label>
-        </div>
+          </div>
 
-        <div class="editor-setting-row">
+          <div class="editor-setting-row">
           <span class="editor-setting-label">{{ $t("rules.fields.dataStartRowIndex") }}</span>
           <label class="field-block">
             <input
@@ -954,9 +966,9 @@ onUnmounted(() => {
               :disabled="!canEdit"
             />
           </label>
-        </div>
+          </div>
 
-        <p class="hint-text template-merge-hint">
+          <p class="hint-text template-merge-hint">
           {{
             $t("rules.messages.mergePreview", {
               range: mergeRangeEndCell,
@@ -964,10 +976,10 @@ onUnmounted(() => {
               dataRow: draftRule.sheetTemplate.dataStartRowIndex,
             })
           }}
-        </p>
+          </p>
 
-        <div class="editor-setting-row editor-setting-row-top">
-          <span class="editor-setting-label">{{ $t("rules.fields.operation") }}</span>
+          <div class="template-operation-block">
+          <h4 class="sub-group-title template-operation-title">{{ $t("rules.fields.operation") }}</h4>
           <div class="template-conflict-list">
             <div v-if="usedTitleVariables.length === 0" class="template-conflict-empty">
               {{ $t("rules.messages.noTitleVariablesUsed") }}
@@ -977,6 +989,7 @@ onUnmounted(() => {
               v-for="config in draftRule.sheetTemplate.variableConfigs"
               :key="config.variableKey"
               class="template-conflict-row"
+              :class="{ 'has-placeholder': config.conflictMode === 'placeholder' }"
             >
               <span class="template-conflict-name">{{ config.variableKey }}</span>
               <select v-model="config.conflictMode" :disabled="!canEdit">
@@ -992,6 +1005,7 @@ onUnmounted(() => {
                 :placeholder="$t('rules.fields.placeholderValue')"
               />
             </div>
+          </div>
           </div>
         </div>
       </section>
@@ -1050,7 +1064,7 @@ onUnmounted(() => {
   min-height: 0;
   overflow: auto;
   display: grid;
-  gap: 10px;
+  gap: 14px;
   align-content: start;
   padding-right: 2px;
   scrollbar-width: none;
@@ -1062,6 +1076,22 @@ onUnmounted(() => {
   height: 0;
 }
 
+.editor-section {
+  display: grid;
+  gap: 8px;
+}
+
+.editor-section-title {
+  margin: 0;
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 .editor-group {
   border: 1px solid var(--stroke-soft);
   border-radius: 12px;
@@ -1071,14 +1101,8 @@ onUnmounted(() => {
   gap: 10px;
 }
 
-.editor-group h3 {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-}
-
 .sub-group-title {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   font-size: var(--fs-caption);
   color: var(--text-muted);
   font-weight: 600;
@@ -1096,14 +1120,48 @@ onUnmounted(() => {
   grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
   align-items: center;
   gap: 10px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 10px;
+  background: var(--bg-input);
+  min-height: 50px;
+  padding: 8px 12px;
 }
 
-.editor-setting-row-top {
+.editor-setting-row > :last-child {
+  justify-self: end;
+  width: min(100%, 720px);
+}
+
+.editor-setting-row .field-block {
+  justify-items: end;
+}
+
+.editor-setting-row .switch {
+  width: auto;
+}
+
+.editor-setting-row.template-header-row > :last-child {
+  justify-self: stretch;
+  width: 100%;
+  max-width: none;
+}
+
+.editor-setting-row.template-header-row .field-block {
+  justify-items: stretch;
+}
+
+.editor-setting-row.template-header-row {
   align-items: start;
 }
 
+.editor-setting-row.template-header-row .editor-setting-label {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+}
+
 .editor-setting-label {
-  color: var(--text-muted);
+  color: var(--text-main);
   font-size: var(--fs-caption);
   line-height: 1.35;
 }
@@ -1145,6 +1203,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  justify-content: space-between;
 }
 
 .hidden-file {
@@ -1180,6 +1239,10 @@ onUnmounted(() => {
 .source-file {
   font-size: var(--fs-caption);
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
 }
 
 .header-wrap {
@@ -1380,40 +1443,99 @@ onUnmounted(() => {
   padding: 7px 9px;
 }
 
-.toggle-row {
-  display: flex;
+.switch {
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-  color: var(--text-main);
-  font-size: var(--fs-sm);
 }
 
-.toggle-row input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  margin: 0;
+.switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  border: 0;
+  padding: 0;
+  clip: rect(0 0 0 0);
+  overflow: hidden;
 }
 
-.template-layout {
+.switch-track {
+  width: 40px;
+  height: 24px;
+  border: 1px solid var(--btn-border);
+  border-radius: 999px;
+  background: var(--switch-track-bg);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.switch-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--switch-thumb);
+  transition: transform 120ms ease;
+}
+
+.switch input:checked + .switch-track {
+  background: var(--switch-track-active);
+  border-color: var(--accent);
+}
+
+.switch input:checked + .switch-track .switch-thumb {
+  transform: translateX(16px);
+}
+
+.switch input:focus-visible + .switch-track {
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.switch input:disabled + .switch-track {
+  opacity: 0.6;
+}
+
+.template-header-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  width: 100%;
+  justify-items: stretch;
+}
+
+.template-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
 }
 
 .template-editor {
   min-width: 0;
+  width: 100%;
+  justify-items: stretch;
 }
 
-.template-variables {
+.template-inline-hint {
+  margin: 0;
+  white-space: normal;
+  text-align: left;
+}
+
+.template-variables-full {
+  border: 1px solid var(--stroke-soft);
+  border-radius: 10px;
+  background: var(--bg-input);
+  padding: 10px 12px;
   display: grid;
   gap: 10px;
-  align-content: start;
 }
 
 .template-variable-group {
   display: grid;
   gap: 6px;
+  width: 100%;
 }
 
 .template-variable-label {
@@ -1455,12 +1577,22 @@ onUnmounted(() => {
 }
 
 .template-merge-hint {
-  margin-left: 170px;
+  margin: 0;
+  text-align: right;
 }
 
 .template-conflict-list {
   display: grid;
   gap: 8px;
+}
+
+.template-operation-block {
+  display: grid;
+  gap: 8px;
+}
+
+.template-operation-title {
+  margin: 0;
 }
 
 .template-conflict-empty {
@@ -1473,9 +1605,18 @@ onUnmounted(() => {
 
 .template-conflict-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(160px, 220px) minmax(0, 1fr);
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 220px);
   gap: 10px;
   align-items: center;
+}
+
+.template-conflict-row.has-placeholder {
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 220px) minmax(0, 1fr);
+}
+
+.template-conflict-row select {
+  justify-self: end;
+  width: 100%;
 }
 
 .template-conflict-name {
@@ -1542,14 +1683,23 @@ onUnmounted(() => {
     align-items: start;
   }
 
-  .template-layout,
+  .template-header-panel,
   .template-row-grid,
   .template-conflict-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .template-input-row {
+    align-items: start;
+  }
+
+  .template-inline-hint {
+    white-space: normal;
+    text-align: left;
+  }
+
   .template-merge-hint {
-    margin-left: 0;
+    text-align: right;
   }
 }
 </style>
