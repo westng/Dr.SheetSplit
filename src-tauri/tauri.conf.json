@@ -36,7 +36,8 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "resources": [
-      "python/transform_engine.py"
+      "python/transform_engine.py",
+      "python/engine"
     ],
     "macOS": {
       "infoPlist": "Info.plist"
