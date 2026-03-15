@@ -379,10 +379,6 @@ onUnmounted(() => {
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 10px;
-  border: 1px solid var(--stroke-soft);
-  border-radius: 12px;
-  background: var(--bg-card);
-  padding: 10px;
 }
 
 .rules-list-head {

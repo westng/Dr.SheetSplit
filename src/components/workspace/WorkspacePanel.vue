@@ -52,6 +52,7 @@ const canStart = computed(
     !isParsingSource.value &&
     !isProcessing.value,
 );
+const displayProcessLogs = computed(() => [...processLogs.value].reverse());
 const dynamicSheetPreview = computed(() => {
   if (!selectedRule.value || !selectedSheetPreview.value) {
     return [] as string[];
@@ -531,11 +532,11 @@ onUnmounted(() => {
     <article class="surface log-zone">
       <h3>{{ $t("workspace.processingLog") }}</h3>
       <ul class="log-list">
-        <li v-if="processLogs.length === 0" class="log-empty">
+        <li v-if="displayProcessLogs.length === 0" class="log-empty">
           {{ $t("workspace.messages.logEmpty") }}
         </li>
         <li
-          v-for="log in processLogs"
+          v-for="log in displayProcessLogs"
           :key="log.id"
           class="log-item"
           :class="`log-${log.level}`"
@@ -831,11 +832,24 @@ li {
   height: 0;
 }
 
+.log-list > li {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
 .log-item {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
   align-items: start;
   gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--stroke-soft);
+}
+
+.log-item:last-child {
+  border-bottom: none;
 }
 
 .log-time {
@@ -852,11 +866,10 @@ li {
 }
 
 .log-success {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--stroke-soft));
+  color: var(--text-main);
 }
 
 .log-error {
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--stroke-soft));
   color: var(--danger);
 }
 
