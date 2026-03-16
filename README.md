@@ -32,8 +32,8 @@ GitHub: https://github.com/westng/Dr.SheetSplit
 - Node.js 18+（建议 20+）
 - pnpm
 - Rust（含 cargo）
-- Python 3（默认使用 `python3`，可用环境变量覆盖）
 - Tauri 运行依赖（按你的系统安装）
+- Python 3（仅开发调试可选，发布版走内置运行时）
 
 可选环境变量：
 
@@ -64,6 +64,17 @@ pnpm tauri dev
 pnpm build
 pnpm tauri build
 ```
+
+发布包（给最终用户安装）使用内置 Python 运行时，不依赖用户机器预装 Python。  
+请在打包前放置对应平台运行时文件：
+
+- macOS: `src-tauri/python/runtime/macos/bin/python3`
+- Windows: `src-tauri/python/runtime/windows/python.exe`
+
+说明：
+
+- Release 构建会校验上面路径；缺失会直接报错，防止误发“非内置”安装包。
+- 开发模式（`pnpm tauri dev`）仍允许回退系统 Python，便于本地调试。
 
 ## 目录结构
 
@@ -99,6 +110,7 @@ pnpm tauri build
 - `source`：来源字段
 - `constant`：固定值
 - `mapping`：映射转换
+- `mapping_multi`：多条件映射转换（`字段1+字段2+...`）
 - `conditional_target`：条件字段分流（双目标字段）
 - `aggregate_sum`：组内求和
 - `aggregate_sum_divide`：逐行相除后求和
@@ -167,10 +179,10 @@ join_unique("采购单号", "\n")
 
 通常是已有 Vite/Tauri 进程占用 `1420`，结束旧进程后重启即可。
 
-### 2) 提示找不到 Python
+### 2) 发布包运行提示找不到 Python
 
-- 确认系统可执行 `python3` 或 `python`
-- 或设置环境变量 `DR_SHEETSPLIT_PYTHON`
+- 检查安装包是否由“内置运行时”构建（见上面的 runtime 路径要求）。
+- 若是开发环境运行（`pnpm tauri dev`），可安装系统 Python 或设置 `DR_SHEETSPLIT_PYTHON`。
 
 ### 3) 导入文件不可选
 
