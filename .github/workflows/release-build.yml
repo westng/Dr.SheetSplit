@@ -74,9 +74,37 @@ jobs:
           BUNDLES_BASE: ${{ matrix.bundles_base }}
           BUNDLES_WITH_UPDATER: ${{ matrix.bundles_with_updater }}
         run: |
-          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ] && [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
+          normalize_private_key() {
+            local raw="$1"
+            if [ -z "${raw}" ]; then
+              return 1
+            fi
+
+            if printf '%s' "${raw}" | grep -q '^untrusted comment:'; then
+              printf '%s' "${raw}"
+              return 0
+            fi
+
+            local decoded
+            decoded="$(printf '%s' "${raw}" | base64 --decode 2>/dev/null || true)"
+            if printf '%s' "${decoded}" | grep -q '^untrusted comment:'; then
+              printf '%s' "${decoded}"
+              return 0
+            fi
+
+            return 1
+          }
+
+          normalized_key="$(normalize_private_key "${TAURI_SIGNING_PRIVATE_KEY}" || true)"
+
+          if [ -n "${normalized_key}" ] && [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
             echo "TAURI_BUNDLES=${BUNDLES_WITH_UPDATER}" >> "$GITHUB_ENV"
             echo "ENABLE_UPDATER=true" >> "$GITHUB_ENV"
+            {
+              echo "TAURI_SIGNING_PRIVATE_KEY_NORMALIZED<<EOF"
+              printf '%s\n' "${normalized_key}"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
             echo "Updater signing secrets detected. Building with updater artifacts."
           else
             echo "::warning::Updater signing secrets missing; building installers without updater artifacts."
@@ -87,7 +115,7 @@ jobs:
       - name: Build Tauri Bundles
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY_NORMALIZED }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --bundles "${{ env.TAURI_BUNDLES }}"
 
