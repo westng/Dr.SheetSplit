@@ -73,6 +73,8 @@ pnpm tauri dev
 
 ## 打包发布
 
+### 本地打包
+
 ```bash
 pnpm build
 pnpm tauri build
@@ -88,6 +90,21 @@ pnpm tauri build
 
 - `release` 构建会校验上述路径，缺失时会直接失败
 - `dev` 模式仍允许回退系统 Python
+
+### GitHub Actions 自动打包
+
+已提供工作流：`.github/workflows/release-build.yml`
+
+- 手动触发：GitHub Actions 页面运行 `Release Build`
+- 自动触发：推送版本标签（如 `v1.0.0`）
+- 产物：分别上传 `macOS`、`Windows` 的 `src-tauri/target/release/bundle` 目录
+
+说明：
+
+- CI 会自动准备内置 Python 运行时（来自 `actions/setup-python`）
+- 如需本地复用同逻辑，可运行：
+  - `python scripts/prepare_bundled_python.py --platform macos`
+  - `python scripts/prepare_bundled_python.py --platform windows`
 
 ## 规则引擎能力
 

@@ -17,6 +17,9 @@ src-tauri/updater.key
 规则.md
 __pycache__/
 *.pyc
+src-tauri/python/runtime/macos/
+src-tauri/python/runtime/windows/
+src-tauri/python/runtime/linux/
 
 # Editor directories and files
 .vscode

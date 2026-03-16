@@ -1,0 +1,68 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            platform: macos
+            bundles: app,dmg,updater
+            artifact_name: Dr.SheetSplit-macos
+          - os: windows-2022
+            platform: windows
+            bundles: nsis,updater
+            artifact_name: Dr.SheetSplit-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Bundled Python Runtime
+        run: python scripts/prepare_bundled_python.py --platform ${{ matrix.platform }}
+
+      - name: Build Tauri Bundles
+        run: pnpm tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: src-tauri/target/release/bundle
+          if-no-files-found: error
