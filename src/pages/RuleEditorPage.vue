@@ -87,7 +87,9 @@ const outputTemplateVariables = computed(() => {
   });
   return Array.from(variableKeys);
 });
-const resultFillTargetFields = computed(() => outputTemplateVariables.value.filter((item) => item.trim().length > 0));
+const outputTargetFields = computed(() => outputTemplateVariables.value.filter((item) => item.trim().length > 0));
+const resultFillTargetFields = computed(() => outputTargetFields.value);
+const totalRowTargetFields = computed(() => outputTargetFields.value);
 const availableTemplateVariables = computed(() =>
   collectAvailableTemplateVariableKeys(draftRule.value.sourceHeaders, draftRule.value.outputColumns),
 );
@@ -169,6 +171,7 @@ function syncDraftWithHeaders(headers: string[]): void {
     return { ...column, ...patch };
   });
   syncResultFillFieldRules();
+  syncTotalRowConfig();
 }
 
 function setDraftRule(rule: RuleDefinition): void {
@@ -180,6 +183,7 @@ function setDraftRule(rule: RuleDefinition): void {
   }
   draftRule.value = nextRule;
   syncResultFillFieldRules();
+  syncTotalRowConfig();
   syncTitleVariableConfigs();
 }
 
@@ -247,6 +251,42 @@ function syncResultFillFieldRules(): void {
       mappingSourceFields: [...current.mappingSourceFields],
     };
   });
+}
+
+function syncTotalRowConfig(): void {
+  const targetFieldSet = new Set(totalRowTargetFields.value);
+  if (!targetFieldSet.has(draftRule.value.totalRow.labelField)) {
+    draftRule.value.totalRow.labelField = "";
+  }
+  draftRule.value.totalRow.sumFields = Array.from(
+    new Set(
+      draftRule.value.totalRow.sumFields
+        .map((field) => field.trim())
+        .filter((field) => targetFieldSet.has(field)),
+    ),
+  );
+}
+
+function handleTotalRowEnabledChange(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  draftRule.value.totalRow.enabled = input.checked;
+  if (!draftRule.value.totalRow.enabled) {
+    return;
+  }
+  if (!draftRule.value.totalRow.label.trim()) {
+    draftRule.value.totalRow.label = "总计";
+  }
+  if (!draftRule.value.totalRow.labelField && totalRowTargetFields.value.length > 0) {
+    draftRule.value.totalRow.labelField = totalRowTargetFields.value[0] || "";
+  }
+}
+
+function toggleTotalRowSumField(targetField: string): void {
+  if (draftRule.value.totalRow.sumFields.includes(targetField)) {
+    draftRule.value.totalRow.sumFields = draftRule.value.totalRow.sumFields.filter((item) => item !== targetField);
+    return;
+  }
+  draftRule.value.totalRow.sumFields = [...draftRule.value.totalRow.sumFields, targetField];
 }
 
 function getResultFillRulesByColumn(column: RuleOutputColumn): RuleResultFillFieldRule[] {
@@ -533,6 +573,7 @@ watch(
   () => resultFillTargetFields.value.join("|"),
   () => {
     syncResultFillFieldRules();
+    syncTotalRowConfig();
   },
   { immediate: true },
 );
@@ -1363,6 +1404,89 @@ onUnmounted(() => {
             </div>
           </div>
           </div>
+          </template>
+        </div>
+      </section>
+
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.totalRowTitle") }}</h3>
+        <div class="editor-group">
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.totalRowEnabled") }}</span>
+            <label class="switch" :aria-label="$t('rules.fields.totalRowEnabled')">
+              <input
+                :checked="draftRule.totalRow.enabled"
+                type="checkbox"
+                :disabled="!canEdit"
+                @change="handleTotalRowEnabledChange"
+              />
+              <span class="switch-track">
+                <span class="switch-thumb" />
+              </span>
+            </label>
+          </div>
+          <p class="hint-text">{{ $t("rules.messages.totalRowHint") }}</p>
+
+          <template v-if="draftRule.totalRow.enabled">
+            <div class="editor-setting-row">
+              <span class="editor-setting-label">{{ $t("rules.fields.totalRowLabel") }}</span>
+              <label class="field-block">
+                <input v-model="draftRule.totalRow.label" type="text" :disabled="!canEdit" />
+              </label>
+            </div>
+
+            <div class="editor-setting-row">
+              <span class="editor-setting-label">{{ $t("rules.fields.totalRowLabelField") }}</span>
+              <label class="field-block">
+                <select v-model="draftRule.totalRow.labelField" :disabled="!canEdit || totalRowTargetFields.length === 0">
+                  <option value="">{{ $t("rules.messages.totalRowLabelFieldFirstColumn") }}</option>
+                  <option
+                    v-for="targetField in totalRowTargetFields"
+                    :key="`total-row-label-${targetField}`"
+                    :value="targetField"
+                  >
+                    {{ targetField }}
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <div class="group-sub-block">
+              <h4 class="sub-group-title">{{ $t("rules.fields.totalRowSumFields") }}</h4>
+              <div class="group-options group-sub-content">
+                <label v-for="targetField in totalRowTargetFields" :key="`total-row-sum-${targetField}`" class="group-option">
+                  <input
+                    type="checkbox"
+                    :checked="draftRule.totalRow.sumFields.includes(targetField)"
+                    :disabled="!canEdit"
+                    @change="toggleTotalRowSumField(targetField)"
+                  />
+                  <button
+                    type="button"
+                    class="group-option-btn"
+                    :class="{ active: draftRule.totalRow.sumFields.includes(targetField) }"
+                    :disabled="!canEdit"
+                    @click.prevent="toggleTotalRowSumField(targetField)"
+                  />
+                  <span :title="targetField">{{ targetField }}</span>
+                </label>
+              </div>
+              <div class="selected-fields group-sub-content">
+                <span
+                  v-for="targetField in draftRule.totalRow.sumFields"
+                  :key="`total-row-selected-${targetField}`"
+                  class="selected-field-chip"
+                >
+                  {{ targetField }}
+                </span>
+                <p v-if="totalRowTargetFields.length === 0" class="hint-text">
+                  {{ $t("rules.messages.totalRowNoFields") }}
+                </p>
+                <p v-else-if="draftRule.totalRow.sumFields.length === 0" class="hint-text">
+                  {{ $t("rules.messages.totalRowSumFieldsHint") }}
+                </p>
+              </div>
+            </div>
           </template>
         </div>
       </section>

@@ -5,8 +5,10 @@ from .common import (
     as_text,
     build_group_key,
     clamp_int,
+    format_number,
     get_first_row,
     parse_exclude_values_text,
+    parse_number,
     sanitize_sheet_name,
     unique_sheet_name,
 )
@@ -90,6 +92,47 @@ def resolve_multi_mapping_with_policy(
         unmatched_fallback,
         f"字段“{field_name}”多条件映射未命中：{joined}",
     )
+
+
+def append_total_row(
+    sheet_headers: List[str],
+    sheet_rows: List[List[str]],
+    total_row_config: dict,
+) -> List[List[str]]:
+    if not sheet_headers:
+        return sheet_rows
+
+    total_row_enabled = resolve_bool(total_row_config.get("enabled"), False)
+    if not total_row_enabled:
+        return sheet_rows
+
+    sum_fields = [as_text(field) for field in (total_row_config.get("sumFields") or []) if as_text(field)]
+    label = as_text(total_row_config.get("label")) or "总计"
+    label_field = as_text(total_row_config.get("labelField"))
+    header_index_map = {header: index for index, header in enumerate(sheet_headers)}
+
+    total_row = ["" for _ in sheet_headers]
+    if label_field and label_field in header_index_map:
+        total_row[header_index_map[label_field]] = label
+    else:
+        total_row[0] = label
+
+    for field in sum_fields:
+        column_index = header_index_map.get(field)
+        if column_index is None:
+            continue
+        total = 0.0
+        has_number = False
+        for row in sheet_rows:
+            cell_value = as_text(row[column_index]) if column_index < len(row) else ""
+            if not cell_value:
+                continue
+            total += parse_number(cell_value, field)
+            has_number = True
+        if has_number:
+            total_row[column_index] = format_number(total)
+
+    return [*sheet_rows, total_row]
 
 
 def infer_placeholder_source_values(
@@ -341,6 +384,9 @@ def run(payload: dict) -> dict:
     mapping_groups = payload.get("mappingGroups") or []
     unmatched_fallback = as_text(payload.get("unmatchedFallback")) or "未知错误"
     sheet_template = rule.get("sheetTemplate") or {}
+    total_row_config = rule.get("totalRow")
+    if not isinstance(total_row_config, dict):
+        total_row_config = {}
 
     if not output_columns:
         raise ValueError("规则未配置输出字段。")
@@ -532,6 +578,7 @@ def run(payload: dict) -> dict:
             output_columns,
             row_is_filled,
         )
+        sheet_rows = append_total_row(sheet_headers, sheet_rows, total_row_config)
 
         total_rows += len(sheet_rows)
         sheet_name = unique_sheet_name(sanitize_sheet_name(sheet_group_name), used_sheet_names)

@@ -387,6 +387,29 @@ export function validateRuleDraft(rule: Readonly<RuleDefinition>): RuleDraftVali
     }
   }
 
+  if (rule.totalRow.enabled) {
+    const totalLabelField = rule.totalRow.labelField.trim();
+    if (totalLabelField && !outputFieldSet.has(totalLabelField)) {
+      errors.push(`总计行标签字段不存在于输出字段：${totalLabelField}`);
+    }
+
+    const seenTotalSumFields = new Set<string>();
+    for (const field of rule.totalRow.sumFields) {
+      const normalized = field.trim();
+      if (!normalized) {
+        continue;
+      }
+      if (seenTotalSumFields.has(normalized)) {
+        errors.push(`总计行求和字段重复：${normalized}`);
+        continue;
+      }
+      seenTotalSumFields.add(normalized);
+      if (!outputFieldSet.has(normalized)) {
+        errors.push(`总计行求和字段不存在于输出字段：${normalized}`);
+      }
+    }
+  }
+
   const targetFieldSet = new Set<string>();
   rule.outputColumns.forEach((column, index) => {
     for (const targetField of getColumnTargetFields(column)) {

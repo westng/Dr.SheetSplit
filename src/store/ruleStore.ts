@@ -14,6 +14,7 @@ import {
   type RuleSheetTemplate,
   type RuleSheetTemplateVariableConfig,
   type RuleSheetTitleConflictMode,
+  type RuleTotalRowConfig,
   type RuleValueMode,
 } from "../types/rule";
 
@@ -118,6 +119,7 @@ function normalizeRule(value: unknown): RuleDefinition | null {
     }
   }
 
+  const totalRow = normalizeTotalRowConfig(input.totalRow, fallback.totalRow);
   const sheetTemplate = normalizeSheetTemplate(input.sheetTemplate, fallback.sheetTemplate);
 
   return {
@@ -137,6 +139,7 @@ function normalizeRule(value: unknown): RuleDefinition | null {
       : [...fallback.summaryGroupByFields],
     summaryFillMissingPrimary: legacySummaryFillMissingPrimary,
     resultFill,
+    totalRow,
     outputColumns,
     sheetTemplate,
     createdAt: typeof input.createdAt === "string" ? input.createdAt : fallback.createdAt,
@@ -290,6 +293,28 @@ function normalizeResultFillConfig(
           .map(normalizeResultFillFieldRule)
           .filter((item): item is RuleResultFillFieldRule => item !== null)
       : [],
+  };
+}
+
+function normalizeTotalRowConfig(
+  value: unknown,
+  fallback: RuleTotalRowConfig,
+): RuleTotalRowConfig {
+  if (!value || typeof value !== "object") {
+    return {
+      ...fallback,
+      sumFields: [...fallback.sumFields],
+    };
+  }
+
+  const input = value as Partial<RuleTotalRowConfig>;
+  return {
+    enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
+    label: String(input.label ?? fallback.label ?? "总计"),
+    labelField: String(input.labelField ?? "").trim(),
+    sumFields: Array.isArray(input.sumFields)
+      ? Array.from(new Set(input.sumFields.map((item) => String(item).trim()).filter(Boolean)))
+      : [...fallback.sumFields],
   };
 }
 

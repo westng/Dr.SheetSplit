@@ -81,6 +81,13 @@ export type RuleResultFillConfig = {
   fieldRules: RuleResultFillFieldRule[];
 };
 
+export type RuleTotalRowConfig = {
+  enabled: boolean;
+  label: string;
+  labelField: string;
+  sumFields: string[];
+};
+
 export type RuleDefinition = {
   id: string;
   name: string;
@@ -97,6 +104,7 @@ export type RuleDefinition = {
   // Legacy flag kept for backward compatibility with historical rules.
   summaryFillMissingPrimary: boolean;
   resultFill: RuleResultFillConfig;
+  totalRow: RuleTotalRowConfig;
   outputColumns: RuleOutputColumn[];
   sheetTemplate: RuleSheetTemplate;
   createdAt: string;
@@ -204,6 +212,15 @@ export function createEmptyRuleResultFillConfig(): RuleResultFillConfig {
   };
 }
 
+export function createEmptyRuleTotalRowConfig(): RuleTotalRowConfig {
+  return {
+    enabled: false,
+    label: "总计",
+    labelField: "",
+    sumFields: [],
+  };
+}
+
 export function createEmptyRuleDefinition(): RuleDefinition {
   const now = new Date().toISOString();
   return {
@@ -221,6 +238,7 @@ export function createEmptyRuleDefinition(): RuleDefinition {
     summaryGroupByFields: [],
     summaryFillMissingPrimary: false,
     resultFill: createEmptyRuleResultFillConfig(),
+    totalRow: createEmptyRuleTotalRowConfig(),
     outputColumns: [createEmptyRuleOutputColumn()],
     sheetTemplate: createEmptyRuleSheetTemplate(),
     createdAt: now,
@@ -244,6 +262,10 @@ export function cloneRuleDefinition(rule: RuleDefinition): RuleDefinition {
         ...item,
         mappingSourceFields: [...item.mappingSourceFields],
       })),
+    },
+    totalRow: {
+      ...rule.totalRow,
+      sumFields: [...rule.totalRow.sumFields],
     },
     outputColumns: rule.outputColumns.map((column) => ({
       ...column,
