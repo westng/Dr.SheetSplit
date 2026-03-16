@@ -62,6 +62,7 @@ export type RuleDefinition = {
   sourceFileName: string;
   sourceSheetName: string;
   sourceHeaders: string[];
+  groupByEnabled: boolean;
   groupByFields: string[];
   groupExcludeMode: RuleGroupExcludeMode;
   groupExcludeValuesText: string;
@@ -153,6 +154,7 @@ export function createEmptyRuleDefinition(): RuleDefinition {
     sourceFileName: "",
     sourceSheetName: "",
     sourceHeaders: [],
+    groupByEnabled: false,
     groupByFields: [],
     groupExcludeMode: "none",
     groupExcludeValuesText: "",

@@ -112,6 +112,7 @@ function normalizeRule(value: unknown): RuleDefinition | null {
     sourceFileName: String(input.sourceFileName ?? ""),
     sourceSheetName: String(input.sourceSheetName ?? ""),
     sourceHeaders: Array.isArray(input.sourceHeaders) ? input.sourceHeaders.map((item) => String(item)) : [],
+    groupByEnabled: typeof input.groupByEnabled === "boolean" ? input.groupByEnabled : false,
     groupByFields: Array.isArray(input.groupByFields) ? input.groupByFields.map((item) => String(item)) : [],
     groupExcludeMode: normalizeGroupExcludeMode(input.groupExcludeMode),
     groupExcludeValuesText: String(input.groupExcludeValuesText ?? ""),

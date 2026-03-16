@@ -189,16 +189,19 @@ function validateSheetTemplate(rule: Readonly<RuleDefinition>, errors: string[])
 function collectRequiredHeaders(rule: Readonly<RuleDefinition>): Set<string> {
   const requiredHeaders = new Set<string>();
 
-  for (const field of rule.groupByFields) {
-    const normalized = field.trim();
-    if (normalized) {
-      requiredHeaders.add(normalized);
+  if (rule.groupByEnabled) {
+    for (const field of rule.groupByFields) {
+      const normalized = field.trim();
+      if (normalized) {
+        requiredHeaders.add(normalized);
+      }
     }
-  }
-  for (const field of rule.summaryGroupByFields) {
-    const normalized = field.trim();
-    if (normalized) {
-      requiredHeaders.add(normalized);
+
+    for (const field of rule.summaryGroupByFields) {
+      const normalized = field.trim();
+      if (normalized) {
+        requiredHeaders.add(normalized);
+      }
     }
   }
 
@@ -284,7 +287,7 @@ export function validateRuleDraft(rule: Readonly<RuleDefinition>): RuleDraftVali
   if (rule.sourceHeaders.length === 0) {
     errors.push("请先上传并解析来源表头。");
   }
-  if (rule.groupByFields.length > 1) {
+  if (rule.groupByEnabled && rule.groupByFields.length > 1) {
     errors.push("当前仅支持一个动态 Sheet 分组字段。");
   }
   if (rule.outputColumns.length === 0) {
@@ -362,7 +365,7 @@ export function validateRuleCompatibility(
     mappingData.map((group) => [group.id, group.entries] as const),
   );
 
-  if (rule.groupExcludeMode === "mapping_group_source" && rule.groupExcludeMappingSection.trim()) {
+  if (rule.groupByEnabled && rule.groupExcludeMode === "mapping_group_source" && rule.groupExcludeMappingSection.trim()) {
     const entries = mappingGroupMap.get(rule.groupExcludeMappingSection.trim());
     const hasMappings = Array.isArray(entries) && entries.length > 0;
     if (!hasMappings) {

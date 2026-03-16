@@ -11,6 +11,7 @@ import {
   cloneRuleDefinition,
   createEmptyRuleDefinition,
   createEmptyRuleOutputColumn,
+  createEmptyRuleSheetTemplate,
   type RuleDefinition,
   type RuleOutputColumn,
 } from "../types/rule";
@@ -203,6 +204,33 @@ function handleGroupExcludeModeChange(): void {
   draftRule.value.groupExcludeValuesText = "";
 }
 
+function clearGroupBySectionConfig(): void {
+  draftRule.value.groupByFields = [];
+  draftRule.value.groupExcludeMode = "none";
+  draftRule.value.groupExcludeValuesText = "";
+  draftRule.value.groupExcludeMappingSection = "";
+  draftRule.value.summaryGroupByFields = [];
+}
+
+async function handleGroupByEnabledChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const nextEnabled = input.checked;
+  if (nextEnabled) {
+    draftRule.value.groupByEnabled = true;
+    return;
+  }
+
+  const confirmed = await confirm(t("rules.messages.groupByDisableConfirm"));
+  if (!confirmed) {
+    input.checked = true;
+    draftRule.value.groupByEnabled = true;
+    return;
+  }
+
+  draftRule.value.groupByEnabled = false;
+  clearGroupBySectionConfig();
+}
+
 function syncTitleVariableConfigs(): void {
   draftRule.value.sheetTemplate.variableConfigs = syncTemplateVariableConfigs(
     usedTitleVariables.value,
@@ -210,22 +238,37 @@ function syncTitleVariableConfigs(): void {
   );
 }
 
-function handleTitleEnabledChange(): void {
-  if (draftRule.value.sheetTemplate.titleEnabled) {
-    if (draftRule.value.sheetTemplate.headerRowIndex <= 1) {
-      draftRule.value.sheetTemplate.headerRowIndex = 2;
-    }
-    if (draftRule.value.sheetTemplate.dataStartRowIndex <= draftRule.value.sheetTemplate.headerRowIndex) {
-      draftRule.value.sheetTemplate.dataStartRowIndex = draftRule.value.sheetTemplate.headerRowIndex + 1;
-    }
+function clearSheetTemplateSectionConfig(): void {
+  draftRule.value.sheetTemplate = createEmptyRuleSheetTemplate();
+}
+
+function normalizeTitleLayoutWhenEnabled(): void {
+  if (draftRule.value.sheetTemplate.headerRowIndex <= 1) {
+    draftRule.value.sheetTemplate.headerRowIndex = 2;
+  }
+  if (draftRule.value.sheetTemplate.dataStartRowIndex <= draftRule.value.sheetTemplate.headerRowIndex) {
+    draftRule.value.sheetTemplate.dataStartRowIndex = draftRule.value.sheetTemplate.headerRowIndex + 1;
+  }
+}
+
+async function handleTitleEnabledChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const nextEnabled = input.checked;
+  if (nextEnabled) {
+    draftRule.value.sheetTemplate.titleEnabled = true;
+    normalizeTitleLayoutWhenEnabled();
     return;
   }
 
-  draftRule.value.sheetTemplate.headerRowIndex = Math.max(1, draftRule.value.sheetTemplate.headerRowIndex);
-  draftRule.value.sheetTemplate.dataStartRowIndex = Math.max(
-    draftRule.value.sheetTemplate.headerRowIndex + 1,
-    draftRule.value.sheetTemplate.dataStartRowIndex,
-  );
+  const confirmed = await confirm(t("rules.messages.sheetTemplateDisableConfirm"));
+  if (!confirmed) {
+    input.checked = true;
+    draftRule.value.sheetTemplate.titleEnabled = true;
+    return;
+  }
+
+  draftRule.value.sheetTemplate.titleEnabled = false;
+  clearSheetTemplateSectionConfig();
 }
 
 function insertTitleVariable(variableKey: string): void {
@@ -532,10 +575,10 @@ onUnmounted(() => {
               class="hidden-file"
               @change="handleSourceFileChange"
             />
+            <span class="source-file">{{ draftRule.sourceFileName || $t("rules.messages.noSourceFile") }}</span>
             <button type="button" class="secondary-btn" :disabled="!canEdit || isParsingSource" @click="openSourceFilePicker">
               {{ isParsingSource ? $t("rules.actions.parsing") : $t("rules.actions.uploadSource") }}
             </button>
-            <span class="source-file">{{ draftRule.sourceFileName || $t("rules.messages.noSourceFile") }}</span>
           </div>
           </div>
 
@@ -591,89 +634,115 @@ onUnmounted(() => {
       <section class="editor-section">
         <h3 class="editor-section-title">{{ $t("rules.editor.groupByTitle") }}</h3>
         <div class="editor-group">
-          <div class="group-options">
-          <label v-for="header in availableHeaders" :key="header" class="group-option">
+          <div class="editor-setting-row">
+          <span class="editor-setting-label">{{ $t("rules.fields.groupByEnabled") }}</span>
+          <label class="switch" :aria-label="$t('rules.fields.groupByEnabled')">
             <input
-              type="radio"
-              name="group-by-field"
-              :checked="draftRule.groupByFields[0] === header"
-              :disabled="!canEdit"
-              @change="selectGroupByField(header)"
-              @click="selectGroupByField(header)"
-            />
-            <button
-              type="button"
-              class="group-option-btn"
-              :class="{ active: draftRule.groupByFields[0] === header }"
-              :disabled="!canEdit"
-              @click="selectGroupByField(header)"
-            />
-            <span :title="header">{{ header }}</span>
-          </label>
-          </div>
-          <div class="selected-fields">
-          <span v-for="field in draftRule.groupByFields" :key="field" class="selected-field-chip">
-            {{ field }}
-          </span>
-          <p v-if="draftRule.groupByFields.length === 0" class="hint-text">
-            {{ $t("rules.messages.groupByHint") }}
-          </p>
-          </div>
-
-          <h4 class="sub-group-title">{{ $t("rules.fields.groupExclude") }}</h4>
-          <div class="mapping-config">
-          <select v-model="draftRule.groupExcludeMode" :disabled="!canEdit" @change="handleGroupExcludeModeChange">
-            <option value="none">{{ $t("rules.messages.groupExcludeMode.none") }}</option>
-            <option value="manual_values">{{ $t("rules.messages.groupExcludeMode.manual_values") }}</option>
-            <option value="mapping_group_source">{{ $t("rules.messages.groupExcludeMode.mapping_group_source") }}</option>
-          </select>
-          <textarea
-            v-if="draftRule.groupExcludeMode === 'manual_values'"
-            v-model="draftRule.groupExcludeValuesText"
-            rows="3"
-            :disabled="!canEdit"
-            :placeholder="$t('rules.messages.groupExcludeValuesPlaceholder')"
-          />
-          <select
-            v-else-if="draftRule.groupExcludeMode === 'mapping_group_source'"
-            v-model="draftRule.groupExcludeMappingSection"
-            :disabled="!canEdit"
-          >
-            <option value="">{{ $t("rules.messages.groupExcludeSelectMapping") }}</option>
-            <option v-for="item in mappingOptions" :key="`exclude-${item.id}`" :value="item.id">
-              {{ item.label }} ({{ item.count }})
-            </option>
-          </select>
-          <p class="hint-text">{{ $t("rules.messages.groupExcludeHint") }}</p>
-          </div>
-
-          <h4 class="sub-group-title">{{ $t("rules.fields.summaryGroupBy") }}</h4>
-          <div class="group-options">
-          <label v-for="header in availableHeaders" :key="`summary-${header}`" class="group-option">
-            <input
+              :checked="draftRule.groupByEnabled"
               type="checkbox"
-              :checked="draftRule.summaryGroupByFields.includes(header)"
               :disabled="!canEdit"
-              @change="toggleSummaryGroupField(header)"
+              @change="handleGroupByEnabledChange"
             />
-            <button
-              type="button"
-              class="group-option-btn"
-              :class="{ active: draftRule.summaryGroupByFields.includes(header) }"
-              :disabled="!canEdit"
-              @click.prevent="toggleSummaryGroupField(header)"
-            />
-            <span :title="header">{{ header }}</span>
+            <span class="switch-track">
+              <span class="switch-thumb" />
+            </span>
           </label>
           </div>
-          <div class="selected-fields">
-          <span v-for="field in draftRule.summaryGroupByFields" :key="`selected-summary-${field}`" class="selected-field-chip">
-            {{ field }}
-          </span>
-          <p v-if="draftRule.summaryGroupByFields.length === 0" class="hint-text">
-            {{ $t("rules.messages.summaryGroupByHint") }}
-          </p>
+
+          <template v-if="draftRule.groupByEnabled">
+          <div class="group-sub-block">
+            <h4 class="sub-group-title">{{ $t("rules.fields.groupByField") }}</h4>
+            <div class="group-options group-sub-content">
+            <label v-for="header in availableHeaders" :key="header" class="group-option">
+              <input
+                type="radio"
+                name="group-by-field"
+                :checked="draftRule.groupByFields[0] === header"
+                :disabled="!canEdit"
+                @change="selectGroupByField(header)"
+                @click="selectGroupByField(header)"
+              />
+              <button
+                type="button"
+                class="group-option-btn"
+                :class="{ active: draftRule.groupByFields[0] === header }"
+                :disabled="!canEdit"
+                @click="selectGroupByField(header)"
+              />
+              <span :title="header">{{ header }}</span>
+            </label>
+            </div>
+            <div class="selected-fields group-sub-content">
+            <span v-for="field in draftRule.groupByFields" :key="field" class="selected-field-chip">
+              {{ field }}
+            </span>
+            <p v-if="draftRule.groupByFields.length === 0" class="hint-text">
+              {{ $t("rules.messages.groupByHint") }}
+            </p>
+            </div>
           </div>
+
+          <div class="group-sub-block">
+            <div class="group-sub-inline-row">
+              <h4 class="sub-group-title">{{ $t("rules.fields.groupExclude") }}</h4>
+              <select v-model="draftRule.groupExcludeMode" :disabled="!canEdit" @change="handleGroupExcludeModeChange">
+                <option value="none">{{ $t("rules.messages.groupExcludeMode.none") }}</option>
+                <option value="manual_values">{{ $t("rules.messages.groupExcludeMode.manual_values") }}</option>
+                <option value="mapping_group_source">{{ $t("rules.messages.groupExcludeMode.mapping_group_source") }}</option>
+              </select>
+            </div>
+            <div class="mapping-config group-sub-content">
+            <textarea
+              v-if="draftRule.groupExcludeMode === 'manual_values'"
+              v-model="draftRule.groupExcludeValuesText"
+              rows="3"
+              :disabled="!canEdit"
+              :placeholder="$t('rules.messages.groupExcludeValuesPlaceholder')"
+            />
+            <select
+              v-else-if="draftRule.groupExcludeMode === 'mapping_group_source'"
+              v-model="draftRule.groupExcludeMappingSection"
+              :disabled="!canEdit"
+            >
+              <option value="">{{ $t("rules.messages.groupExcludeSelectMapping") }}</option>
+              <option v-for="item in mappingOptions" :key="`exclude-${item.id}`" :value="item.id">
+                {{ item.label }} ({{ item.count }})
+              </option>
+            </select>
+            <p class="hint-text">{{ $t("rules.messages.groupExcludeHint") }}</p>
+            </div>
+          </div>
+
+          <div class="group-sub-block">
+            <h4 class="sub-group-title">{{ $t("rules.fields.summaryGroupBy") }}</h4>
+            <div class="group-options group-sub-content">
+            <label v-for="header in availableHeaders" :key="`summary-${header}`" class="group-option">
+              <input
+                type="checkbox"
+                :checked="draftRule.summaryGroupByFields.includes(header)"
+                :disabled="!canEdit"
+                @change="toggleSummaryGroupField(header)"
+              />
+              <button
+                type="button"
+                class="group-option-btn"
+                :class="{ active: draftRule.summaryGroupByFields.includes(header) }"
+                :disabled="!canEdit"
+                @click.prevent="toggleSummaryGroupField(header)"
+              />
+              <span :title="header">{{ header }}</span>
+            </label>
+            </div>
+            <div class="selected-fields group-sub-content">
+            <span v-for="field in draftRule.summaryGroupByFields" :key="`selected-summary-${field}`" class="selected-field-chip">
+              {{ field }}
+            </span>
+            <p v-if="draftRule.summaryGroupByFields.length === 0" class="hint-text">
+              {{ $t("rules.messages.summaryGroupByHint") }}
+            </p>
+            </div>
+          </div>
+          </template>
         </div>
       </section>
 
@@ -930,7 +999,7 @@ onUnmounted(() => {
           <span class="editor-setting-label">{{ $t("rules.fields.sheetTitleEnabled") }}</span>
           <label class="switch" :aria-label="$t('rules.fields.sheetTitleEnabled')">
             <input
-              v-model="draftRule.sheetTemplate.titleEnabled"
+              :checked="draftRule.sheetTemplate.titleEnabled"
               type="checkbox"
               :disabled="!canEdit"
               @change="handleTitleEnabledChange"
@@ -941,6 +1010,7 @@ onUnmounted(() => {
           </label>
           </div>
 
+          <template v-if="draftRule.sheetTemplate.titleEnabled">
           <div class="editor-setting-row template-header-row">
             <span class="editor-setting-label">{{ $t("rules.fields.titleTemplate") }}</span>
             <div class="template-header-panel">
@@ -1065,6 +1135,7 @@ onUnmounted(() => {
             </div>
           </div>
           </div>
+          </template>
         </div>
       </section>
 
@@ -1166,6 +1237,46 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.group-sub-block {
+  border: 1px solid var(--stroke-soft);
+  border-radius: 10px;
+  background: var(--bg-input);
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.group-sub-block .sub-group-title {
+  margin: 0;
+}
+
+.group-sub-content {
+  margin-inline: 2px;
+}
+
+.group-sub-inline-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.group-sub-inline-row .sub-group-title {
+  margin: 0;
+}
+
+.group-sub-inline-row select {
+  justify-self: end;
+  width: min(100%, 720px);
+  border: 1px solid var(--stroke-soft);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-main);
+  font: inherit;
+  font-size: var(--fs-sm);
+  padding: 7px 9px;
+}
+
 .field-block {
   display: grid;
   gap: 6px;
@@ -1261,7 +1372,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  justify-content: space-between;
+  justify-content: flex-end;
 }
 
 .hidden-file {
@@ -1301,6 +1412,7 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: right;
+  max-width: min(100%, 360px);
 }
 
 .header-wrap {

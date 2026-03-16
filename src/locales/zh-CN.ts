@@ -313,6 +313,8 @@ export default {
       name: "规则名称",
       description: "规则描述",
       sourceSheet: "来源工作表",
+      groupByEnabled: "启用动态 Sheet 分组",
+      groupByField: "分组字段",
       summaryGroupBy: "汇总分组字段",
       groupExclude: "动态分组排除规则",
       targetField: "目标字段",
@@ -360,6 +362,8 @@ export default {
       sourceLoadFailed: "来源文件解析失败，请检查格式。",
       noSourceFile: "尚未上传来源文件",
       noHeaders: "当前没有可用表头，请先上传来源文件并选择工作表。",
+      groupByDisableConfirm: "关闭后将清空动态 Sheet 分组相关配置，确认继续吗？",
+      sheetTemplateDisableConfirm: "关闭后将清空 Sheet 模板配置，确认继续吗？",
       groupByHint: "请只选择一个分组字段，当前暂不支持多字段组合。",
       summaryGroupByHint: "用于组内汇总（如子公司+到货仓）。聚合规则会按这里的字段组合成一行。",
       groupExcludeMode: {

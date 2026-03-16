@@ -15,15 +15,24 @@ from .mapping import build_mapping_indexes, resolve_headers
 from .title import render_title
 
 
+def resolve_bool(value, fallback: bool) -> bool:
+    return value if isinstance(value, bool) else fallback
+
+
 def run(payload: dict) -> dict:
     rule = payload.get("rule") or {}
     sheet = payload.get("sheet") or {}
+    group_by_enabled = resolve_bool(rule.get("groupByEnabled"), False)
     output_columns = rule.get("outputColumns") or []
-    group_fields = rule.get("groupByFields") or []
-    group_exclude_mode = as_text(rule.get("groupExcludeMode")) or "none"
-    group_exclude_values_text = as_text(rule.get("groupExcludeValuesText"))
-    group_exclude_mapping_section = as_text(rule.get("groupExcludeMappingSection"))
-    summary_group_fields = [as_text(field) for field in (rule.get("summaryGroupByFields") or []) if as_text(field)]
+    group_fields = (rule.get("groupByFields") or []) if group_by_enabled else []
+    group_exclude_mode = (as_text(rule.get("groupExcludeMode")) or "none") if group_by_enabled else "none"
+    group_exclude_values_text = as_text(rule.get("groupExcludeValuesText")) if group_by_enabled else ""
+    group_exclude_mapping_section = as_text(rule.get("groupExcludeMappingSection")) if group_by_enabled else ""
+    summary_group_fields = (
+        [as_text(field) for field in (rule.get("summaryGroupByFields") or []) if as_text(field)]
+        if group_by_enabled
+        else []
+    )
     source_rows = sheet.get("rows") or []
     mapping_groups = payload.get("mappingGroups") or []
     unmatched_fallback = as_text(payload.get("unmatchedFallback")) or "未知错误"
@@ -138,4 +147,3 @@ def run(payload: dict) -> dict:
         "rowCount": total_rows,
         "sheets": sheets,
     }
-

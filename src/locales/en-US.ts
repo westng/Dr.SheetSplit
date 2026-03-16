@@ -313,6 +313,8 @@ export default {
       name: "Rule Name",
       description: "Description",
       sourceSheet: "Source Sheet",
+      groupByEnabled: "Enable Dynamic Sheet Grouping",
+      groupByField: "Group Field",
       summaryGroupBy: "Summary Group Fields",
       groupExclude: "Dynamic Group Exclude Rule",
       targetField: "Target Field",
@@ -360,6 +362,10 @@ export default {
       sourceLoadFailed: "Failed to parse source file.",
       noSourceFile: "No source file uploaded",
       noHeaders: "No headers available. Upload a source file and choose a sheet first.",
+      groupByDisableConfirm:
+        "Turning this off will clear all dynamic Sheet grouping settings. Continue?",
+      sheetTemplateDisableConfirm:
+        "Turning this off will clear all Sheet template settings. Continue?",
       groupByHint: "Select exactly one grouping field. Multi-field grouping is not supported yet.",
       summaryGroupByHint: "Used for row aggregation (for example Subsidiary + Arrival Warehouse).",
       groupExcludeMode: {
