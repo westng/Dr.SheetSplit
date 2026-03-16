@@ -115,15 +115,21 @@ jobs:
       - name: Build Tauri Bundles
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY_NORMALIZED }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --bundles "${{ env.TAURI_BUNDLES }}"
+        run: |
+          if [ "${ENABLE_UPDATER}" = "true" ]; then
+            export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY_NORMALIZED}"
+          else
+            unset TAURI_SIGNING_PRIVATE_KEY
+            unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          fi
+          pnpm tauri build --bundles "${TAURI_BUNDLES}"
 
       - name: Inspect Build Outputs
         if: always()
         shell: bash
         run: |
-          echo "TAURI_BUNDLES=${{ env.TAURI_BUNDLES }}"
+          echo "TAURI_BUNDLES=${TAURI_BUNDLES}"
           find src-tauri/target -maxdepth 6 -type d -name bundle -print || true
           find src-tauri/target -maxdepth 8 -type f \( -name "*.app" -o -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.zip" -o -name "latest.json" \) -print || true
 
