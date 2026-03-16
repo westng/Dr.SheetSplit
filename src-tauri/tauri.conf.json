@@ -37,7 +37,8 @@
     "targets": "all",
     "resources": [
       "python/transform_engine.py",
-      "python/engine"
+      "python/engine",
+      "python/runtime"
     ],
     "macOS": {
       "infoPlist": "Info.plist"

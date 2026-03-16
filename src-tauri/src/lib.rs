@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env, fs,
     io::Write,
     path::{Path, PathBuf},
@@ -12,6 +13,24 @@ const SLOGAN_API_URL: &str =
     "https://api.southerly.top/api/yiyan?msg=%E8%AF%97%E8%AF%8D&output=json";
 const PYTHON_SCRIPT_RESOURCE_PATH: &str = "python/transform_engine.py";
 const PYTHON_INTERPRETER_ENV_KEY: &str = "DR_SHEETSPLIT_PYTHON";
+
+#[cfg(target_os = "windows")]
+const BUNDLED_PYTHON_RELATIVE_CANDIDATES: &[&str] =
+    &["python/runtime/windows/python.exe", "python/runtime/python.exe"];
+
+#[cfg(target_os = "macos")]
+const BUNDLED_PYTHON_RELATIVE_CANDIDATES: &[&str] = &[
+    "python/runtime/macos/bin/python3",
+    "python/runtime/bin/python3",
+    "python/runtime/python3",
+];
+
+#[cfg(target_os = "linux")]
+const BUNDLED_PYTHON_RELATIVE_CANDIDATES: &[&str] = &[
+    "python/runtime/linux/bin/python3",
+    "python/runtime/bin/python3",
+    "python/runtime/python3",
+];
 
 #[tauri::command]
 fn restart_app(app: AppHandle) {
@@ -73,17 +92,65 @@ fn resolve_python_script_path(app: &AppHandle) -> Result<PathBuf, String> {
     Err("未找到 Python 处理引擎脚本，请检查打包资源或开发目录。".to_string())
 }
 
-fn python_candidates() -> Vec<String> {
+fn resolve_resource_path(app: &AppHandle, relative: &str) -> Option<PathBuf> {
+    app.path()
+        .resolve(relative, BaseDirectory::Resource)
+        .ok()
+        .filter(|path| path.exists())
+}
+
+fn bundled_python_candidates(app: &AppHandle) -> Vec<String> {
     let mut candidates = Vec::new();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    for relative in BUNDLED_PYTHON_RELATIVE_CANDIDATES {
+        if let Some(path) = resolve_resource_path(app, relative) {
+            candidates.push(path.to_string_lossy().to_string());
+            continue;
+        }
+
+        let dev_candidate = manifest_dir.join(relative);
+        if dev_candidate.exists() {
+            candidates.push(dev_candidate.to_string_lossy().to_string());
+        }
+    }
+
+    candidates
+}
+
+fn python_candidates(app: &AppHandle) -> Result<Vec<String>, String> {
+    let mut candidates = Vec::new();
+
     if let Ok(custom) = env::var(PYTHON_INTERPRETER_ENV_KEY) {
         let normalized = custom.trim();
         if !normalized.is_empty() {
             candidates.push(normalized.to_string());
         }
     }
-    candidates.push("python3".to_string());
-    candidates.push("python".to_string());
-    candidates
+
+    candidates.extend(bundled_python_candidates(app));
+
+    // 开发模式允许回落到系统 Python，发布包默认只使用内置运行时。
+    if cfg!(debug_assertions) {
+        candidates.push("python3".to_string());
+        candidates.push("python".to_string());
+    }
+
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in candidates {
+        if seen.insert(candidate.clone()) {
+            deduped.push(candidate);
+        }
+    }
+
+    if deduped.is_empty() {
+        return Err(
+            "未找到可用的 Python 解释器。发布版本请确保已内置 python/runtime 运行时。".to_string(),
+        );
+    }
+
+    Ok(deduped)
 }
 
 fn execute_python(
@@ -118,9 +185,10 @@ fn run_python_transform(app: AppHandle, payload: String) -> Result<String, Strin
         .map_err(|err| format!("处理引擎入参不是合法 JSON：{}", err))?;
 
     let script_path = resolve_python_script_path(&app)?;
+    let candidates = python_candidates(&app)?;
     let mut last_error = String::new();
 
-    for candidate in python_candidates() {
+    for candidate in candidates {
         match execute_python(&candidate, &script_path, &payload) {
             Ok(output) => {
                 let stdout_text = String::from_utf8(output.stdout)
