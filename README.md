@@ -1,148 +1,119 @@
 # Dr.SheetSplit
 
-Dr.SheetSplit 是一个基于 Tauri + Vue + TypeScript + Python 的桌面端表格拆分工具，支持可视化规则配置、映射管理、多 Sheet 动态产出、规则引擎表达式计算、本地持久化和自动更新。
+[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](./LICENSE)
 
-GitHub: https://github.com/westng/Dr.SheetSplit
+Dr.SheetSplit 是一个基于 **Tauri + Vue 3 + TypeScript + Python** 的桌面端表格拆分工具。
+你可以通过可视化规则把一个源表按业务条件拆分为多个工作表/工作簿，并支持映射转换、表达式计算、本地持久化和自动更新。
 
-## 核心能力
 
-- 处理表格：导入源表，按规则拆分生成新工作簿
-- 配置规则：可视化编辑拆分规则，支持导入/导出规则 JSON
-- 映射管理：分组维护映射数据，支持上传、编辑、导入/导出
-- 规则引擎：支持来源字段、映射、聚合、条件分流、表达式、日期格式化等模式
-- 本地数据存储：规则/映射/设置持久化
-- 自动更新：检查更新、一键下载并安装更新
-- 国际化：简体中文 / English
+## 目录
 
-## 技术架构
+- [功能特性](#功能特性)
+- [技术栈](#技术栈)
+- [安装与运行](#安装与运行)
+- [打包发布](#打包发布)
+- [规则引擎能力](#规则引擎能力)
+- [映射数据格式](#映射数据格式)
+- [数据存储](#数据存储)
+- [自动更新](#自动更新)
+- [项目结构](#项目结构)
+- [常见问题](#常见问题)
+- [贡献指南](#贡献指南)
+- [开源协议](#开源协议)
+
+## 功能特性
+
+- 可视化规则配置：创建、编辑、导入、导出规则
+- 动态拆分：按分组字段输出多个 Sheet
+- 映射管理：分组维护映射，支持 JSON/CSV/XLSX 导入导出
+- 多种取值模式：来源字段、固定值、映射转换、多条件映射、聚合、表达式、日期格式化等
+- 本地持久化：规则、映射、历史记录、界面设置
+- 自动更新：检查更新、下载并安装
+- 多语言：简体中文 / English
+
+## 技术栈
 
 - 前端：Vue 3 + TypeScript + Vite + Vue Router + Vue I18n
-- 桌面壳：Tauri 2
-- 引擎：Python（`src-tauri/python/transform_engine.py`）
+- 桌面端：Tauri 2
+- 规则引擎：Python（`src-tauri/python/transform_engine.py`）
 - 表格处理：SheetJS (`xlsx`)
-- 本地持久化：
-  - 规则：SQLite（`@tauri-apps/plugin-sql`）
+- 本地存储：
+  - 规则：SQLite（`rules.db`）
+  - 历史：SQLite（`history.db`）
   - 映射：Tauri Store（`settings.json`）
-  - UI 设置：`localStorage`（外观、语言、导出目录、导入格式等）
 
-## 快速开始
+## 安装与运行
 
-### 1. 环境要求
+### 环境要求
 
 - Node.js 18+（建议 20+）
 - pnpm
 - Rust（含 cargo）
-- Tauri 运行依赖（按你的系统安装）
-- Python 3（仅开发调试可选，发布版走内置运行时）
+- Tauri 系统依赖（按官方文档安装）
+- Python 3（仅开发调试可选；发布包使用内置运行时）
 
-可选环境变量：
+可选环境变量（开发调试时指定解释器）：
 
 ```bash
 export DR_SHEETSPLIT_PYTHON=/usr/local/bin/python3
 ```
 
-### 2. 安装依赖
+### 安装依赖
 
 ```bash
 pnpm install
 ```
 
-### 3. 本地开发（热更新）
+### 本地开发
 
 ```bash
 pnpm tauri dev
 ```
 
-说明：
-
-- Tauri 会先启动 Vite（默认 `http://localhost:1420`）再启动桌面窗口。
-- 保持只启动一个 `pnpm tauri dev` 进程，避免端口冲突。
-
-### 4. 构建
+## 打包发布
 
 ```bash
 pnpm build
 pnpm tauri build
 ```
 
-发布包（给最终用户安装）使用内置 Python 运行时，不依赖用户机器预装 Python。  
-请在打包前放置对应平台运行时文件：
+发布包采用内置 Python 运行时（最终用户无需安装 Python）。
+打包前请放置对应平台可执行文件：
 
 - macOS: `src-tauri/python/runtime/macos/bin/python3`
 - Windows: `src-tauri/python/runtime/windows/python.exe`
 
 说明：
 
-- Release 构建会校验上面路径；缺失会直接报错，防止误发“非内置”安装包。
-- 开发模式（`pnpm tauri dev`）仍允许回退系统 Python，便于本地调试。
+- `release` 构建会校验上述路径，缺失时会直接失败
+- `dev` 模式仍允许回退系统 Python
 
-## 目录结构
+## 规则引擎能力
 
-```text
-.
-├─ src/                         # 前端源码
-│  ├─ components/               # 业务组件（处理区/规则区/映射区）
-│  ├─ pages/                    # 页面与子窗口页面
-│  ├─ services/process/         # 处理编排（调用引擎 -> 构建工作簿 -> 写文件）
-│  ├─ store/                    # 规则/映射/语言/UI 状态
-│  ├─ utils/                    # 校验、解析、模板等工具
-│  ├─ composables/              # 外观、更新、导入格式等组合式逻辑
-│  └─ locales/                  # i18n 文案
-├─ src-tauri/
-│  ├─ src/lib.rs                # Tauri 命令：文件读写/更新/调用 Python 引擎等
-│  ├─ python/transform_engine.py# 核心拆分引擎
-│  └─ tauri.conf.json           # Tauri 配置（窗口、更新、打包资源）
-└─ README.md
-```
-
-## 处理流程
-
-1. 前端加载源表并选择规则
-2. 执行规则兼容性校验（字段、映射分组等）
-3. 调用 `run_python_transform` 执行 Python 引擎
-4. 前端将引擎输出组装为 xlsx 文件
-5. 写入导出目录（默认系统“下载”目录）
-
-## 规则引擎（输出字段取值方式）
-
-当前支持：
+当前支持的输出取值方式：
 
 - `source`：来源字段
 - `constant`：固定值
-- `mapping`：映射转换
+- `mapping`：单字段映射转换
 - `mapping_multi`：多条件映射转换（`字段1+字段2+...`）
-- `conditional_target`：条件字段分流（双目标字段）
+- `conditional_target`：条件字段分流
 - `aggregate_sum`：组内求和
 - `aggregate_sum_divide`：逐行相除后求和
 - `aggregate_join`：组内拼接
-- `copy_output`：复制已产出的字段
+- `copy_output`：复制已产出字段
 - `format_date`：日期格式化
-- `expression`：表达式计算（高级）
+- `expression`：表达式计算
 
-### conditional_target 说明
-
-- 可配置判断字段、映射分组、命中目标字段、未命中目标字段、取值来源字段、聚合方式。
-- 优先按映射分组的 `target` 判定写入哪一列；未命中走默认分支。
-- 输出时会按每个 Sheet 自动裁剪“整列全空”的条件列，避免出现无效双列。
-
-### expression 说明
-
-支持：
-
-- 运算符：`+ - * /`
-- 函数：`sum`、`avg`、`first`、`num`、`join`、`join_unique`、`count`、`count_non_empty`
-- 字段名需使用引号，例如：`sum("采购数量") / sum("采购规格")`
-
-示例：
+表达式示例：
 
 ```text
 sum("采购数量") / sum("采购规格")
-join_unique("采购单号", "\n")
+join_unique("采购单号", "\\n")
 ```
 
-## 映射文件格式
+## 映射数据格式
 
-映射管理支持导入：
+支持导入：
 
 - JSON
 - CSV
@@ -150,40 +121,105 @@ join_unique("采购单号", "\n")
 
 要求：
 
-- 表头需可识别 `source` / `target`（支持中英文关键词，如“来源/目标”）。
-- JSON 可使用：
-  - 数组对象：`[{ "source": "...", "target": "..." }]`
+- 需要可识别 `source` / `target` 列
+- JSON 支持：
+  - 数组对象：`[{ "source": "A", "target": "B" }]`
   - 键值对象：`{ "A": "B" }`
 
-## 本地存储与数据
+备注：首次安装默认没有预置映射数据，映射内容由用户自行维护。
 
-- 规则库：SQLite（数据库名 `rules.db`）
-- 映射库：Tauri Store（`settings.json`）
+## 数据存储
+
+- 规则：`rules.db`
+- 历史：`history.db`
+- 映射：`settings.json`（`mappingGroups`）
 - 外观/语言/导入导出设置：`localStorage`
 
 ## 自动更新
 
 已接入 `@tauri-apps/plugin-updater`，默认更新地址：
 
-- `https://github.com/westng/Dr.SheetSplit/releases/latest/download/latest.json`
+- <https://github.com/westng/Dr.SheetSplit/releases/latest/download/latest.json>
 
-支持：
+## 项目结构
 
-- 启动自动检查更新
-- 手动检查更新
-- 一键下载并安装更新
+```text
+.
+├─ src/                         # 前端源码
+│  ├─ components/               # 业务组件
+│  ├─ pages/                    # 主页面与编辑器页面
+│  ├─ services/process/         # 处理流程编排
+│  ├─ store/                    # 状态与本地存储访问
+│  ├─ utils/                    # 校验、解析等工具
+│  ├─ composables/              # 组合式逻辑
+│  └─ locales/                  # i18n 文案
+├─ src-tauri/
+│  ├─ src/lib.rs                # Tauri 命令与后端桥接
+│  ├─ python/                   # Python 引擎与运行时资源
+│  └─ tauri.conf.json           # 打包、窗口、更新配置
+├─ README.md
+└─ LICENSE
+```
 
 ## 常见问题
 
-### 1) `pnpm tauri dev` 启动失败，提示端口占用
+### 1. `pnpm tauri dev` 启动失败，提示端口占用
 
-通常是已有 Vite/Tauri 进程占用 `1420`，结束旧进程后重启即可。
+通常是已有 Vite/Tauri 进程占用 `1420`，结束旧进程后重试。
 
-### 2) 发布包运行提示找不到 Python
+### 2. 发布包运行时报 Python 相关错误
 
-- 检查安装包是否由“内置运行时”构建（见上面的 runtime 路径要求）。
-- 若是开发环境运行（`pnpm tauri dev`），可安装系统 Python 或设置 `DR_SHEETSPLIT_PYTHON`。
+优先检查打包时是否包含内置运行时路径（见[打包发布](#打包发布)）。
 
-### 3) 导入文件不可选
+### 3. 导入文件不可选
 
-检查“设置 -> 导入导出 -> 允许导入文件格式”是否包含该扩展名（内置 `xlsx/xls/csv` 不可删除）。
+检查「设置 -> 导入导出 -> 允许导入文件格式」是否包含对应扩展名。
+
+## 贡献指南
+
+欢迎通过 Issue 和 Pull Request 参与贡献。
+
+### 提交 Issue
+
+提交前请先搜索是否已有相同问题。新建 Issue 时建议包含：
+
+- 问题描述与预期行为
+- 复现步骤
+- 运行环境（操作系统、应用版本）
+- 错误日志或截图（如有）
+
+### 开发流程
+
+1. Fork 仓库并创建分支（示例：`feat/multi-field-mapping`、`fix/history-scrollbar`）
+2. 安装依赖：`pnpm install`
+3. 本地开发：`pnpm tauri dev`
+4. 构建检查：`pnpm build`
+5. 提交代码并发起 Pull Request
+
+### 提交规范
+
+建议使用 Conventional Commits，例如：
+
+- `feat(rules): add multi-field mapping mode`
+- `fix(ui): hide sidebar history scrollbar`
+- `docs(readme): improve contribution guide`
+
+### Pull Request 要求
+
+- 标题清晰说明变更目标
+- 描述包含：变更内容、原因、影响范围
+- 涉及 UI 调整时附截图或录屏
+- 通过基础构建检查（至少 `pnpm build`）
+- 保持单一主题，避免把无关改动混入同一个 PR
+
+### 安全问题
+
+若发现安全漏洞，请不要公开提交 Issue。请通过仓库维护者联系方式私下通知。
+
+### 行为准则
+
+请保持尊重、专业、可协作的沟通方式。
+
+## 开源协议
+
+本项目采用 **The Unlicense**，详见 [LICENSE](./LICENSE)。
