@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup PNPM
         uses: pnpm/action-setup@v4
@@ -40,7 +40,7 @@ jobs:
           version: 10
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -54,7 +54,7 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -117,13 +117,16 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          CONFIG_PATH="src-tauri/tauri.conf.json"
           if [ "${ENABLE_UPDATER}" = "true" ]; then
             export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY_NORMALIZED}"
           else
             unset TAURI_SIGNING_PRIVATE_KEY
             unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            python -c "import json, pathlib; source = pathlib.Path('src-tauri/tauri.conf.json'); target = pathlib.Path('src-tauri/tauri.conf.ci.json'); payload = json.loads(source.read_text(encoding='utf-8')); payload.setdefault('bundle', {})['createUpdaterArtifacts'] = False; target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8'); print(f'generated {target} with createUpdaterArtifacts=false')"
+            CONFIG_PATH="src-tauri/tauri.conf.ci.json"
           fi
-          pnpm tauri build --bundles "${TAURI_BUNDLES}"
+          pnpm tauri build --config "${CONFIG_PATH}" --bundles "${TAURI_BUNDLES}"
 
       - name: Inspect Build Outputs
         if: always()
@@ -134,7 +137,7 @@ jobs:
           find src-tauri/target -maxdepth 8 -type f \( -name "*.app" -o -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.zip" -o -name "latest.json" \) -print || true
 
       - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: src-tauri/target/**/release/bundle/**
