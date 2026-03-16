@@ -13,17 +13,21 @@ jobs:
   build:
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             platform: macos
-            bundles: app,dmg,updater
+            bundles_base: app,dmg
+            bundles_with_updater: app,dmg,updater
             artifact_name: Dr.SheetSplit-macos
           - os: windows-2022
             platform: windows
-            bundles: nsis,updater
+            bundles_base: nsis
+            bundles_with_updater: nsis,updater
             artifact_name: Dr.SheetSplit-windows
 
     steps:
@@ -60,26 +64,29 @@ jobs:
       - name: Prepare Bundled Python Runtime
         run: python scripts/prepare_bundled_python.py --platform ${{ matrix.platform }}
 
-      - name: Validate Updater Signing Secrets
+      - name: Resolve Bundle Targets
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          BUNDLES_BASE: ${{ matrix.bundles_base }}
+          BUNDLES_WITH_UPDATER: ${{ matrix.bundles_with_updater }}
         run: |
-          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
-            echo "::error::Missing secret TAURI_SIGNING_PRIVATE_KEY"
-            exit 1
-          fi
-          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
-            echo "::error::Missing secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-            exit 1
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ] && [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
+            echo "TAURI_BUNDLES=${BUNDLES_WITH_UPDATER}" >> "$GITHUB_ENV"
+            echo "ENABLE_UPDATER=true" >> "$GITHUB_ENV"
+            echo "Updater signing secrets detected. Building with updater artifacts."
+          else
+            echo "::warning::Updater signing secrets missing; building installers without updater artifacts."
+            echo "TAURI_BUNDLES=${BUNDLES_BASE}" >> "$GITHUB_ENV"
+            echo "ENABLE_UPDATER=false" >> "$GITHUB_ENV"
           fi
 
       - name: Build Tauri Bundles
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --bundles ${{ matrix.bundles }}
+        run: pnpm tauri build --bundles "$TAURI_BUNDLES"
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
