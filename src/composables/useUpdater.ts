@@ -16,7 +16,7 @@ const SETTINGS_KEYS = {
 export function useUpdater() {
   const autoCheckUpdates = ref(true);
   const exportDirectory = ref("~/Downloads");
-  const currentVersion = ref("0.1.0");
+  const currentVersion = ref("1.0.0");
   const latestVersion = ref("");
   const pendingUpdate = ref<Update | null>(null);
   const updateStatus = ref<
@@ -213,7 +213,7 @@ export function useUpdater() {
     try {
       currentVersion.value = normalizeVersion(await getVersion());
     } catch {
-      currentVersion.value = "0.1.0";
+      currentVersion.value = "1.0.0";
     }
 
     if (autoCheckUpdates.value) {
