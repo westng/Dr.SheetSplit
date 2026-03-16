@@ -334,6 +334,7 @@ export default {
       source: "Source Field",
       constant: "Constant",
       mapping: "Mapping",
+      mapping_multi: "Multi-Field Mapping",
       conditional_target: "Conditional Split",
       aggregate_sum: "Group Sum",
       aggregate_sum_divide: "Sum of Row Division",
@@ -373,6 +374,9 @@ export default {
       selectSheet: "Select a sheet",
       selectHeader: "Select a source field",
       selectMapping: "Select a mapping section",
+      mappingMultiSelectHeaderHint: "Select at least one source field to build a composite key joined by +.",
+      mappingMultiHint:
+        "Composite key format is fixed as field1+field2+...; mismatched values within the same group will raise an error.",
       conditionalSelectJudgeField: "Select condition field (e.g. Product ID)",
       conditionalSelectMapping: "Select condition mapping group (match source column)",
       conditionalSelectValueSource: "Select value source field (e.g. Purchase Quantity)",

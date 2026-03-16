@@ -74,6 +74,15 @@ function normalizeRule(value: unknown): RuleDefinition | null {
           targetField: String(column.targetField ?? ""),
           valueMode: normalizeValueMode(column.valueMode),
           sourceField: String(column.sourceField ?? ""),
+          mappingSourceFields: Array.isArray(column.mappingSourceFields)
+            ? Array.from(
+                new Set(
+                  column.mappingSourceFields
+                    .map((item) => String(item).trim())
+                    .filter(Boolean),
+                ),
+              )
+            : [],
           constantValue: String(column.constantValue ?? ""),
           mappingSection: String(column.mappingSection ?? "").trim(),
           conditionalJudgeField: String(column.conditionalJudgeField ?? "").trim(),
@@ -161,6 +170,7 @@ function normalizeValueMode(value: unknown): RuleValueMode {
   if (
     value === "constant" ||
     value === "mapping" ||
+    value === "mapping_multi" ||
     value === "conditional_target" ||
     value === "aggregate_sum" ||
     value === "aggregate_sum_divide" ||

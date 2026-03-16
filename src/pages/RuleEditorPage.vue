@@ -117,6 +117,13 @@ function syncDraftWithHeaders(headers: string[]): void {
       };
     }
 
+    if (column.valueMode === "mapping_multi") {
+      return {
+        ...column,
+        mappingSourceFields: column.mappingSourceFields.filter((field) => headerSet.has(field)),
+      };
+    }
+
     const patch: Partial<RuleOutputColumn> = {};
     if (column.valueMode === "conditional_target") {
       if (column.conditionalJudgeField && !headerSet.has(column.conditionalJudgeField)) {
@@ -171,6 +178,14 @@ function toggleSummaryGroupField(header: string): void {
     return;
   }
   draftRule.value.summaryGroupByFields = [...draftRule.value.summaryGroupByFields, header];
+}
+
+function toggleMappingSourceField(column: RuleOutputColumn, header: string): void {
+  if (column.mappingSourceFields.includes(header)) {
+    column.mappingSourceFields = column.mappingSourceFields.filter((item) => item !== header);
+    return;
+  }
+  column.mappingSourceFields = [...column.mappingSourceFields, header];
 }
 
 function handleGroupExcludeModeChange(): void {
@@ -311,6 +326,7 @@ async function handleSourceFileChange(event: Event): Promise<void> {
 function handleColumnModeChange(column: RuleOutputColumn): void {
   column.targetField = "";
   column.sourceField = "";
+  column.mappingSourceFields = [];
   column.constantValue = "";
   column.mappingSection = "";
   column.conditionalJudgeField = "";
@@ -722,6 +738,7 @@ onUnmounted(() => {
                   <option value="source">{{ $t("rules.modes.source") }}</option>
                   <option value="constant">{{ $t("rules.modes.constant") }}</option>
                   <option value="mapping">{{ $t("rules.modes.mapping") }}</option>
+                  <option value="mapping_multi">{{ $t("rules.modes.mapping_multi") }}</option>
                   <option value="conditional_target">{{ $t("rules.modes.conditional_target") }}</option>
                   <option value="aggregate_sum">{{ $t("rules.modes.aggregate_sum") }}</option>
                   <option value="aggregate_sum_divide">{{ $t("rules.modes.aggregate_sum_divide") }}</option>
@@ -747,6 +764,47 @@ onUnmounted(() => {
                         {{ item.label }} ({{ item.count }})
                       </option>
                     </select>
+                  </div>
+                </template>
+                <template v-else-if="column.valueMode === 'mapping_multi'">
+                  <div class="mapping-config">
+                    <div class="group-options mapping-multi-options">
+                      <label v-for="header in availableHeaders" :key="`${column.id}-${header}`" class="group-option">
+                        <input
+                          type="checkbox"
+                          :checked="column.mappingSourceFields.includes(header)"
+                          :disabled="!canEdit"
+                          @change="toggleMappingSourceField(column, header)"
+                        />
+                        <button
+                          type="button"
+                          class="group-option-btn"
+                          :class="{ active: column.mappingSourceFields.includes(header) }"
+                          :disabled="!canEdit"
+                          @click.prevent="toggleMappingSourceField(column, header)"
+                        />
+                        <span :title="header">{{ header }}</span>
+                      </label>
+                    </div>
+                    <div class="selected-fields">
+                      <span
+                        v-for="field in column.mappingSourceFields"
+                        :key="`${column.id}-selected-${field}`"
+                        class="selected-field-chip"
+                      >
+                        {{ field }}
+                      </span>
+                      <p v-if="column.mappingSourceFields.length === 0" class="hint-text">
+                        {{ $t("rules.messages.mappingMultiSelectHeaderHint") }}
+                      </p>
+                    </div>
+                    <select v-model="column.mappingSection" :disabled="!canEdit">
+                      <option value="">{{ $t("rules.messages.selectMapping") }}</option>
+                      <option v-for="item in mappingOptions" :key="item.id" :value="item.id">
+                        {{ item.label }} ({{ item.count }})
+                      </option>
+                    </select>
+                    <p class="hint-text">{{ $t("rules.messages.mappingMultiHint") }}</p>
                   </div>
                 </template>
                 <template v-else-if="column.valueMode === 'conditional_target'">
@@ -1428,6 +1486,14 @@ onUnmounted(() => {
 .mapping-config {
   display: grid;
   gap: 6px;
+}
+
+.mapping-multi-options {
+  max-height: 132px;
+  overflow: auto;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 8px;
+  padding: 6px;
 }
 
 .mapping-config select,

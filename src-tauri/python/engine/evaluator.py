@@ -10,7 +10,7 @@ from .common import (
     parse_number,
 )
 from .expression import evaluate_expression, normalize_expression_result
-from .mapping import resolve_mapping_value
+from .mapping import resolve_mapping_value, resolve_multi_mapping_value
 
 
 def evaluate_group_output(
@@ -42,6 +42,36 @@ def evaluate_group_output(
                 mapping_section,
                 mapping_indexes,
                 unmatched_fallback,
+            )
+            values.append(value)
+            output_by_field[target_field] = value
+            continue
+
+        if mode == "mapping_multi":
+            source_fields = [
+                as_text(field) for field in column.get("mappingSourceFields", []) if as_text(field)
+            ]
+            mapping_section = as_text(column.get("mappingSection"))
+            if not source_fields:
+                value = "未知错误填充"
+                values.append(value)
+                output_by_field[target_field] = value
+                continue
+
+            key_parts: List[str] = []
+            for source_field in source_fields:
+                source_value = as_text(first_row.get(source_field))
+                if any(as_text(row.get(source_field)) != source_value for row in rows):
+                    raise ValueError(
+                        f"多条件映射字段“{source_field}”在同一分组内存在不一致值，无法映射。"
+                    )
+                key_parts.append(source_value)
+
+            value = resolve_multi_mapping_value(
+                key_parts,
+                mapping_section,
+                mapping_indexes,
+                "未知错误填充",
             )
             values.append(value)
             output_by_field[target_field] = value
@@ -236,4 +266,3 @@ def prune_conditional_empty_columns(
             [as_text(row[index]) if index < len(row) else "" for index in kept_indexes]
         )
     return pruned_headers, pruned_rows
-

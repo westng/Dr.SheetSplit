@@ -54,6 +54,16 @@ function hasColumnErrors(column: RuleOutputColumn, index: number, errors: string
     return;
   }
 
+  if (column.valueMode === "mapping_multi") {
+    if (!column.targetField.trim()) {
+      errors.push(`输出列第 ${rowNumber} 行缺少目标字段名。`);
+    }
+    if (column.mappingSourceFields.length === 0) {
+      errors.push(`输出列第 ${rowNumber} 行至少选择一个映射来源字段。`);
+    }
+    return;
+  }
+
   if (column.valueMode === "conditional_target") {
     if (!column.conditionalHitTargetField.trim()) {
       errors.push(`输出列第 ${rowNumber} 行缺少命中目标字段。`);
@@ -196,6 +206,15 @@ function collectRequiredHeaders(rule: Readonly<RuleDefinition>): Set<string> {
     if (column.valueMode === "source" || column.valueMode === "mapping") {
       if (column.sourceField.trim()) {
         requiredHeaders.add(column.sourceField.trim());
+      }
+      continue;
+    }
+    if (column.valueMode === "mapping_multi") {
+      for (const field of column.mappingSourceFields) {
+        const normalized = field.trim();
+        if (normalized) {
+          requiredHeaders.add(normalized);
+        }
       }
       continue;
     }
@@ -356,6 +375,18 @@ export function validateRuleCompatibility(
     const columnName = getColumnDisplayName(column, index);
 
     if (column.valueMode === "mapping") {
+      if (!column.mappingSection.trim()) {
+        continue;
+      }
+      const entries = mappingGroupMap.get(column.mappingSection);
+      const hasMappings = Array.isArray(entries) && entries.length > 0;
+      if (!hasMappings) {
+        errors.push(`映射分组 ${column.mappingSection || "(未选择)"} 为空，无法用于字段 ${columnName}`);
+      }
+      continue;
+    }
+
+    if (column.valueMode === "mapping_multi") {
       if (!column.mappingSection.trim()) {
         continue;
       }

@@ -48,3 +48,32 @@ def resolve_mapping_value(
         return group_map[source_value]
     return unmatched_fallback
 
+
+def canonicalize_composite_key(value: str) -> str:
+    normalized = as_text(value)
+    if not normalized:
+        return ""
+    return "+".join([as_text(part) for part in normalized.split("+")])
+
+
+def resolve_multi_mapping_value(
+    source_values: List[str],
+    mapping_id: str,
+    mapping_indexes: Dict[str, Dict[str, str]],
+    unmatched_fallback: str,
+) -> str:
+    normalized_parts = [as_text(value) for value in source_values]
+    if not any(normalized_parts):
+        return ""
+
+    composite_key = "+".join(normalized_parts)
+    group_map = mapping_indexes.get(mapping_id, {})
+    direct_hit = group_map.get(composite_key)
+    if direct_hit is not None:
+        return as_text(direct_hit)
+
+    for source, target in group_map.items():
+        if canonicalize_composite_key(source) == composite_key:
+            return as_text(target)
+
+    return unmatched_fallback

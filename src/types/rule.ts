@@ -2,6 +2,7 @@ export type RuleValueMode =
   | "source"
   | "constant"
   | "mapping"
+  | "mapping_multi"
   | "conditional_target"
   | "aggregate_sum"
   | "aggregate_sum_divide"
@@ -19,6 +20,7 @@ export type RuleOutputColumn = {
   targetField: string;
   valueMode: RuleValueMode;
   sourceField: string;
+  mappingSourceFields: string[];
   constantValue: string;
   mappingSection: string;
   conditionalJudgeField: string;
@@ -77,6 +79,7 @@ export const RULE_VALUE_MODES: RuleValueMode[] = [
   "source",
   "constant",
   "mapping",
+  "mapping_multi",
   "conditional_target",
   "aggregate_sum",
   "aggregate_sum_divide",
@@ -99,6 +102,7 @@ export function createEmptyRuleOutputColumn(): RuleOutputColumn {
     targetField: "",
     valueMode: "source",
     sourceField: "",
+    mappingSourceFields: [],
     constantValue: "",
     mappingSection: "",
     conditionalJudgeField: "",
@@ -170,7 +174,10 @@ export function cloneRuleDefinition(rule: RuleDefinition): RuleDefinition {
     groupExcludeValuesText: rule.groupExcludeValuesText,
     groupExcludeMappingSection: rule.groupExcludeMappingSection,
     summaryGroupByFields: [...rule.summaryGroupByFields],
-    outputColumns: rule.outputColumns.map((column) => ({ ...column })),
+    outputColumns: rule.outputColumns.map((column) => ({
+      ...column,
+      mappingSourceFields: [...column.mappingSourceFields],
+    })),
     sheetTemplate: {
       ...rule.sheetTemplate,
       variableConfigs: rule.sheetTemplate.variableConfigs.map((config) => ({ ...config })),
