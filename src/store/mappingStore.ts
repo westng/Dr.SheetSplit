@@ -1,6 +1,5 @@
 import { load } from "@tauri-apps/plugin-store";
 import { readonly, ref } from "vue";
-import { DEFAULT_MAPPING_DATA } from "../constants/mappingDefaults";
 import {
   LEGACY_MAPPING_SECTION_IDS,
   type LegacyMappingData,
@@ -305,7 +304,7 @@ export function initializeMappingStore(): Promise<void> {
         if (!migratedFromStore) {
           const migratedFromLocalStorage = await migrateLegacyLocalStorageIfNeeded();
           if (!migratedFromLocalStorage) {
-            setGroups(convertLegacyToGroups(DEFAULT_MAPPING_DATA));
+            setGroups([]);
             await persistGroups();
           }
         }
@@ -313,7 +312,7 @@ export function initializeMappingStore(): Promise<void> {
     } catch {
       const migratedFromLocalStorage = await migrateLegacyLocalStorageIfNeeded();
       if (!migratedFromLocalStorage) {
-        setGroups(convertLegacyToGroups(DEFAULT_MAPPING_DATA));
+        setGroups([]);
       }
     }
 
