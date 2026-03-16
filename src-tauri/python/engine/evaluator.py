@@ -225,9 +225,17 @@ def prune_conditional_empty_columns(
     headers: List[str],
     output_rows: List[List[str]],
     output_columns: List[dict],
+    row_is_filled: List[bool] | None = None,
 ) -> Tuple[List[str], List[List[str]]]:
     if not headers or not output_rows:
         return headers, output_rows
+
+    row_indexes = list(range(len(output_rows)))
+    if row_is_filled and len(row_is_filled) == len(output_rows):
+        non_filled_indexes = [index for index, is_filled in enumerate(row_is_filled) if not is_filled]
+        if non_filled_indexes:
+            # Prefer real source rows when deciding whether to keep conditional split columns.
+            row_indexes = non_filled_indexes
 
     drop_indices = set()
     cursor = 0
@@ -237,12 +245,16 @@ def prune_conditional_empty_columns(
             hit_index = cursor
             miss_index = cursor + 1
             hit_has_value = any(
-                as_text(row[hit_index]) if hit_index < len(row) else ""
-                for row in output_rows
+                as_text(output_rows[row_index][hit_index])
+                if hit_index < len(output_rows[row_index])
+                else ""
+                for row_index in row_indexes
             )
             miss_has_value = any(
-                as_text(row[miss_index]) if miss_index < len(row) else ""
-                for row in output_rows
+                as_text(output_rows[row_index][miss_index])
+                if miss_index < len(output_rows[row_index])
+                else ""
+                for row_index in row_indexes
             )
 
             if hit_has_value and not miss_has_value:

@@ -7,6 +7,10 @@ import {
   type RuleDefinition,
   type RuleJoinDelimiter,
   type RuleOutputColumn,
+  type RuleResultFillConfig,
+  type RuleResultFillFallbackMode,
+  type RuleResultFillFieldRule,
+  type RuleResultFillValueMode,
   type RuleSheetTemplate,
   type RuleSheetTemplateVariableConfig,
   type RuleSheetTitleConflictMode,
@@ -103,6 +107,17 @@ function normalizeRule(value: unknown): RuleDefinition | null {
         }))
     : fallback.outputColumns;
 
+  const legacySummaryFillMissingPrimary =
+    typeof input.summaryFillMissingPrimary === "boolean" ? input.summaryFillMissingPrimary : false;
+  const resultFill = normalizeResultFillConfig(input.resultFill, fallback.resultFill, legacySummaryFillMissingPrimary);
+
+  if (legacySummaryFillMissingPrimary && !resultFill.baselineSourceField) {
+    const legacyBaseline = Array.isArray(input.summaryGroupByFields) ? String(input.summaryGroupByFields[0] ?? "").trim() : "";
+    if (legacyBaseline) {
+      resultFill.baselineSourceField = legacyBaseline;
+    }
+  }
+
   const sheetTemplate = normalizeSheetTemplate(input.sheetTemplate, fallback.sheetTemplate);
 
   return {
@@ -120,6 +135,8 @@ function normalizeRule(value: unknown): RuleDefinition | null {
     summaryGroupByFields: Array.isArray(input.summaryGroupByFields)
       ? input.summaryGroupByFields.map((item) => String(item))
       : [...fallback.summaryGroupByFields],
+    summaryFillMissingPrimary: legacySummaryFillMissingPrimary,
+    resultFill,
     outputColumns,
     sheetTemplate,
     createdAt: typeof input.createdAt === "string" ? input.createdAt : fallback.createdAt,
@@ -197,6 +214,83 @@ function normalizeJoinDelimiter(value: unknown): RuleJoinDelimiter {
     return value;
   }
   return "newline";
+}
+
+function normalizeResultFillValueMode(value: unknown): RuleResultFillValueMode {
+  if (
+    value === "empty" ||
+    value === "constant" ||
+    value === "mapping" ||
+    value === "mapping_multi" ||
+    value === "copy_output"
+  ) {
+    return value;
+  }
+  return "inherit";
+}
+
+function normalizeResultFillFallbackMode(value: unknown): RuleResultFillFallbackMode {
+  if (value === "empty" || value === "error") {
+    return value;
+  }
+  return "unknown";
+}
+
+function normalizeResultFillFieldRule(value: unknown): RuleResultFillFieldRule | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const input = value as Partial<RuleResultFillFieldRule>;
+  const targetField = String(input.targetField ?? "").trim();
+  if (!targetField) {
+    return null;
+  }
+
+  return {
+    targetField,
+    valueMode: normalizeResultFillValueMode(input.valueMode),
+    constantValue: String(input.constantValue ?? ""),
+    sourceField: String(input.sourceField ?? "").trim(),
+    mappingSourceFields: Array.isArray(input.mappingSourceFields)
+      ? Array.from(
+          new Set(
+            input.mappingSourceFields
+              .map((item) => String(item).trim())
+              .filter(Boolean),
+          ),
+        )
+      : [],
+    mappingSection: String(input.mappingSection ?? "").trim(),
+    copyFromTargetField: String(input.copyFromTargetField ?? "").trim(),
+  };
+}
+
+function normalizeResultFillConfig(
+  value: unknown,
+  fallback: RuleResultFillConfig,
+  legacyEnabled: boolean,
+): RuleResultFillConfig {
+  if (!value || typeof value !== "object") {
+    return {
+      ...fallback,
+      enabled: legacyEnabled || fallback.enabled,
+      fieldRules: fallback.fieldRules.map((item) => ({ ...item, mappingSourceFields: [...item.mappingSourceFields] })),
+    };
+  }
+
+  const input = value as Partial<RuleResultFillConfig>;
+  return {
+    enabled: typeof input.enabled === "boolean" ? input.enabled : legacyEnabled,
+    baselineSourceField: String(input.baselineSourceField ?? "").trim(),
+    baselineMappingSection: String(input.baselineMappingSection ?? "").trim(),
+    fallbackMode: normalizeResultFillFallbackMode(input.fallbackMode),
+    fieldRules: Array.isArray(input.fieldRules)
+      ? input.fieldRules
+          .map(normalizeResultFillFieldRule)
+          .filter((item): item is RuleResultFillFieldRule => item !== null)
+      : [],
+  };
 }
 
 function normalizeGroupExcludeMode(value: unknown): RuleDefinition["groupExcludeMode"] {

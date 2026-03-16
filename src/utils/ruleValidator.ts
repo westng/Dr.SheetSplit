@@ -272,6 +272,26 @@ function collectRequiredHeaders(rule: Readonly<RuleDefinition>): Set<string> {
     }
   }
 
+  if (rule.resultFill.enabled) {
+    if (rule.resultFill.baselineSourceField.trim()) {
+      requiredHeaders.add(rule.resultFill.baselineSourceField.trim());
+    }
+
+    for (const fieldRule of rule.resultFill.fieldRules) {
+      if (fieldRule.valueMode === "mapping" && fieldRule.sourceField.trim()) {
+        requiredHeaders.add(fieldRule.sourceField.trim());
+      }
+      if (fieldRule.valueMode === "mapping_multi") {
+        for (const field of fieldRule.mappingSourceFields) {
+          const normalized = field.trim();
+          if (normalized) {
+            requiredHeaders.add(normalized);
+          }
+        }
+      }
+    }
+  }
+
   return requiredHeaders;
 }
 
@@ -290,6 +310,10 @@ export function validateRuleDraft(rule: Readonly<RuleDefinition>): RuleDraftVali
   if (rule.groupByEnabled && rule.groupByFields.length > 1) {
     errors.push("当前仅支持一个动态 Sheet 分组字段。");
   }
+  const resultFillEnabled = rule.resultFill.enabled || rule.summaryFillMissingPrimary;
+  if (!rule.groupByEnabled && resultFillEnabled) {
+    errors.push("未启用动态 Sheet 分组时，不能启用结果补齐空行。");
+  }
   if (rule.outputColumns.length === 0) {
     errors.push("请至少配置一个输出字段。");
   }
@@ -305,6 +329,62 @@ export function validateRuleDraft(rule: Readonly<RuleDefinition>): RuleDraftVali
       continue;
     }
     summaryFieldSet.add(normalized);
+  }
+
+  if (resultFillEnabled && summaryFieldSet.size === 0) {
+    errors.push("开启结果补齐空行前，请先选择至少一个汇总分组字段。");
+  }
+
+  const outputFieldSet = new Set(
+    rule.outputColumns.flatMap((column) => getColumnTargetFields(column)),
+  );
+
+  if (resultFillEnabled) {
+    if (!rule.resultFill.baselineSourceField.trim()) {
+      errors.push("结果补齐空行缺少基线字段。");
+    }
+    if (!rule.resultFill.baselineMappingSection.trim()) {
+      errors.push("结果补齐空行缺少基线映射分组。");
+    }
+
+    const seenFillTargetFields = new Set<string>();
+    for (const fieldRule of rule.resultFill.fieldRules) {
+      const targetField = fieldRule.targetField.trim();
+      if (!targetField) {
+        continue;
+      }
+      if (seenFillTargetFields.has(targetField)) {
+        errors.push(`结果补齐规则存在重复字段：${targetField}`);
+        continue;
+      }
+      seenFillTargetFields.add(targetField);
+
+      if (!outputFieldSet.has(targetField)) {
+        errors.push(`结果补齐规则字段不存在于输出字段：${targetField}`);
+      }
+
+      if (fieldRule.valueMode === "mapping") {
+        if (!fieldRule.sourceField.trim()) {
+          errors.push(`结果补齐字段 ${targetField} 缺少映射来源字段。`);
+        }
+        if (!fieldRule.mappingSection.trim()) {
+          errors.push(`结果补齐字段 ${targetField} 缺少映射分组。`);
+        }
+      }
+
+      if (fieldRule.valueMode === "mapping_multi") {
+        if (fieldRule.mappingSourceFields.length === 0) {
+          errors.push(`结果补齐字段 ${targetField} 至少选择一个映射来源字段。`);
+        }
+        if (!fieldRule.mappingSection.trim()) {
+          errors.push(`结果补齐字段 ${targetField} 缺少映射分组。`);
+        }
+      }
+
+      if (fieldRule.valueMode === "copy_output" && !fieldRule.copyFromTargetField.trim()) {
+        errors.push(`结果补齐字段 ${targetField} 缺少复制来源字段。`);
+      }
+    }
   }
 
   const targetFieldSet = new Set<string>();
@@ -365,6 +445,14 @@ export function validateRuleCompatibility(
     mappingData.map((group) => [group.id, group.entries] as const),
   );
 
+  if (rule.resultFill.enabled && rule.resultFill.baselineMappingSection.trim()) {
+    const entries = mappingGroupMap.get(rule.resultFill.baselineMappingSection.trim());
+    const hasMappings = Array.isArray(entries) && entries.length > 0;
+    if (!hasMappings) {
+      errors.push(`结果补齐基线映射 ${rule.resultFill.baselineMappingSection} 为空或不存在。`);
+    }
+  }
+
   if (rule.groupByEnabled && rule.groupExcludeMode === "mapping_group_source" && rule.groupExcludeMappingSection.trim()) {
     const entries = mappingGroupMap.get(rule.groupExcludeMappingSection.trim());
     const hasMappings = Array.isArray(entries) && entries.length > 0;
@@ -421,6 +509,33 @@ export function validateRuleCompatibility(
         .includes(column.copyFromTargetField.trim());
       if (!hasOutputField) {
         errors.push(`字段 ${columnName} 复制来源不存在：${column.copyFromTargetField}`);
+      }
+    }
+  }
+
+  if (rule.resultFill.enabled) {
+    const outputTargetSet = new Set(
+      rule.outputColumns.flatMap((item) => getColumnTargetFields(item)),
+    );
+
+    for (const fieldRule of rule.resultFill.fieldRules) {
+      const targetField = fieldRule.targetField.trim();
+      if (!targetField || !outputTargetSet.has(targetField)) {
+        continue;
+      }
+
+      if (fieldRule.valueMode === "mapping" || fieldRule.valueMode === "mapping_multi") {
+        const entries = mappingGroupMap.get(fieldRule.mappingSection.trim());
+        const hasMappings = Array.isArray(entries) && entries.length > 0;
+        if (!hasMappings) {
+          errors.push(`结果补齐字段 ${targetField} 的映射分组为空或不存在：${fieldRule.mappingSection || "(未选择)"}`);
+        }
+      }
+
+      if (fieldRule.valueMode === "copy_output" && fieldRule.copyFromTargetField.trim()) {
+        if (!outputTargetSet.has(fieldRule.copyFromTargetField.trim())) {
+          errors.push(`结果补齐字段 ${targetField} 的复制来源不存在：${fieldRule.copyFromTargetField}`);
+        }
       }
     }
   }

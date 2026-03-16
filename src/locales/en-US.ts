@@ -316,6 +316,13 @@ export default {
       groupByEnabled: "Enable Dynamic Sheet Grouping",
       groupByField: "Group Field",
       summaryGroupBy: "Summary Group Fields",
+      summaryFillMissingPrimary: "Enable Result Row Fill",
+      resultFillEnabled: "Enable Result Fill Strategy",
+      resultFillBaselineSourceField: "Baseline Source Field",
+      resultFillBaselineMapping: "Baseline Mapping",
+      resultFillFallbackMode: "Fallback Policy",
+      resultFillFieldRules: "Field Fill Rules",
+      resultFillValueMode: "Fill Mode",
       groupExclude: "Dynamic Group Exclude Rule",
       targetField: "Target Field",
       valueMode: "Value Mode",
@@ -352,6 +359,19 @@ export default {
       error: "Raise Error",
       placeholder: "Use Placeholder",
     },
+    resultFillModes: {
+      inherit: "Inherit Field Rule",
+      empty: "Leave Empty",
+      constant: "Constant",
+      mapping: "Mapping",
+      mapping_multi: "Multi-Field Mapping",
+      copy_output: "Copy Output Field",
+    },
+    resultFillFallbackModes: {
+      unknown: "Unknown Error Fill",
+      empty: "Leave Empty",
+      error: "Raise Error",
+    },
     messages: {
       copySuffix: "Copy",
       copyCreated: "Rule copy created. Review and save it.",
@@ -368,6 +388,13 @@ export default {
         "Turning this off will clear all Sheet template settings. Continue?",
       groupByHint: "Select exactly one grouping field. Multi-field grouping is not supported yet.",
       summaryGroupByHint: "Used for row aggregation (for example Subsidiary + Arrival Warehouse).",
+      summaryFillMissingPrimaryHint:
+        "Post-process strategy: fill missing groups by the first summary field and try to populate mappable fields.",
+      resultFillHint:
+        "Fill missing rows from mapping baseline and generate each output field with its configured fill rule.",
+      resultFillNoFields: "No output fields are available yet. Configure output target fields first.",
+      resultFillNoExtraConfig: "No additional config is required for this mode.",
+      resultFillDisabledConfig: "Enable result fill strategy to configure this column.",
       groupExcludeMode: {
         none: "No filter",
         manual_values: "Manual exclude values",

@@ -14,6 +14,14 @@ export type RuleSheetTitleConflictMode = "first" | "last" | "join_unique" | "err
 export type RuleConditionalAggregateMode = "first" | "sum" | "join_newline";
 export type RuleJoinDelimiter = "newline" | "space";
 export type RuleGroupExcludeMode = "none" | "manual_values" | "mapping_group_source";
+export type RuleResultFillFallbackMode = "unknown" | "empty" | "error";
+export type RuleResultFillValueMode =
+  | "inherit"
+  | "empty"
+  | "constant"
+  | "mapping"
+  | "mapping_multi"
+  | "copy_output";
 
 export type RuleOutputColumn = {
   id: string;
@@ -55,6 +63,24 @@ export type RuleSheetTemplate = {
   reservedFooterRows: number;
 };
 
+export type RuleResultFillFieldRule = {
+  targetField: string;
+  valueMode: RuleResultFillValueMode;
+  constantValue: string;
+  sourceField: string;
+  mappingSourceFields: string[];
+  mappingSection: string;
+  copyFromTargetField: string;
+};
+
+export type RuleResultFillConfig = {
+  enabled: boolean;
+  baselineSourceField: string;
+  baselineMappingSection: string;
+  fallbackMode: RuleResultFillFallbackMode;
+  fieldRules: RuleResultFillFieldRule[];
+};
+
 export type RuleDefinition = {
   id: string;
   name: string;
@@ -68,6 +94,9 @@ export type RuleDefinition = {
   groupExcludeValuesText: string;
   groupExcludeMappingSection: string;
   summaryGroupByFields: string[];
+  // Legacy flag kept for backward compatibility with historical rules.
+  summaryFillMissingPrimary: boolean;
+  resultFill: RuleResultFillConfig;
   outputColumns: RuleOutputColumn[];
   sheetTemplate: RuleSheetTemplate;
   createdAt: string;
@@ -95,6 +124,14 @@ export const RULE_SHEET_TITLE_CONFLICT_MODES: RuleSheetTitleConflictMode[] = [
   "join_unique",
   "error",
   "placeholder",
+];
+export const RULE_RESULT_FILL_VALUE_MODES: RuleResultFillValueMode[] = [
+  "inherit",
+  "empty",
+  "constant",
+  "mapping",
+  "mapping_multi",
+  "copy_output",
 ];
 
 export function createEmptyRuleOutputColumn(): RuleOutputColumn {
@@ -145,6 +182,28 @@ export function createEmptyRuleSheetTemplate(): RuleSheetTemplate {
   };
 }
 
+export function createEmptyRuleResultFillFieldRule(targetField = ""): RuleResultFillFieldRule {
+  return {
+    targetField,
+    valueMode: "inherit",
+    constantValue: "",
+    sourceField: "",
+    mappingSourceFields: [],
+    mappingSection: "",
+    copyFromTargetField: "",
+  };
+}
+
+export function createEmptyRuleResultFillConfig(): RuleResultFillConfig {
+  return {
+    enabled: false,
+    baselineSourceField: "",
+    baselineMappingSection: "",
+    fallbackMode: "unknown",
+    fieldRules: [],
+  };
+}
+
 export function createEmptyRuleDefinition(): RuleDefinition {
   const now = new Date().toISOString();
   return {
@@ -160,6 +219,8 @@ export function createEmptyRuleDefinition(): RuleDefinition {
     groupExcludeValuesText: "",
     groupExcludeMappingSection: "",
     summaryGroupByFields: [],
+    summaryFillMissingPrimary: false,
+    resultFill: createEmptyRuleResultFillConfig(),
     outputColumns: [createEmptyRuleOutputColumn()],
     sheetTemplate: createEmptyRuleSheetTemplate(),
     createdAt: now,
@@ -176,6 +237,14 @@ export function cloneRuleDefinition(rule: RuleDefinition): RuleDefinition {
     groupExcludeValuesText: rule.groupExcludeValuesText,
     groupExcludeMappingSection: rule.groupExcludeMappingSection,
     summaryGroupByFields: [...rule.summaryGroupByFields],
+    summaryFillMissingPrimary: rule.summaryFillMissingPrimary,
+    resultFill: {
+      ...rule.resultFill,
+      fieldRules: rule.resultFill.fieldRules.map((item) => ({
+        ...item,
+        mappingSourceFields: [...item.mappingSourceFields],
+      })),
+    },
     outputColumns: rule.outputColumns.map((column) => ({
       ...column,
       mappingSourceFields: [...column.mappingSourceFields],

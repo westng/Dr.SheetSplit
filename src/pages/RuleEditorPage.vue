@@ -7,13 +7,16 @@ import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
 import { useMappingStore, useRuleStore } from "../store";
 import {
+  RULE_RESULT_FILL_VALUE_MODES,
   RULE_SHEET_TITLE_CONFLICT_MODES,
   cloneRuleDefinition,
   createEmptyRuleDefinition,
   createEmptyRuleOutputColumn,
+  createEmptyRuleResultFillFieldRule,
   createEmptyRuleSheetTemplate,
   type RuleDefinition,
   type RuleOutputColumn,
+  type RuleResultFillFieldRule,
 } from "../types/rule";
 import {
   collectAvailableTemplateVariableKeys,
@@ -65,6 +68,7 @@ const activeSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
 });
 const canEdit = computed(() => !isSaving.value);
 const titleConflictModes = RULE_SHEET_TITLE_CONFLICT_MODES;
+const resultFillValueModes = RULE_RESULT_FILL_VALUE_MODES;
 const sourceTemplateVariables = computed(() => draftRule.value.sourceHeaders);
 
 function getColumnTargetFields(column: RuleOutputColumn): string[] {
@@ -83,6 +87,7 @@ const outputTemplateVariables = computed(() => {
   });
   return Array.from(variableKeys);
 });
+const resultFillTargetFields = computed(() => outputTemplateVariables.value.filter((item) => item.trim().length > 0));
 const availableTemplateVariables = computed(() =>
   collectAvailableTemplateVariableKeys(draftRule.value.sourceHeaders, draftRule.value.outputColumns),
 );
@@ -106,6 +111,14 @@ function syncDraftWithHeaders(headers: string[]): void {
   const headerSet = new Set(headers);
   draftRule.value.groupByFields = draftRule.value.groupByFields.filter((field) => headerSet.has(field)).slice(0, 1);
   draftRule.value.summaryGroupByFields = draftRule.value.summaryGroupByFields.filter((field) => headerSet.has(field));
+  if (!headerSet.has(draftRule.value.resultFill.baselineSourceField)) {
+    draftRule.value.resultFill.baselineSourceField = "";
+  }
+  draftRule.value.resultFill.fieldRules = draftRule.value.resultFill.fieldRules.map((fieldRule) => ({
+    ...fieldRule,
+    sourceField: headerSet.has(fieldRule.sourceField) ? fieldRule.sourceField : "",
+    mappingSourceFields: fieldRule.mappingSourceFields.filter((field) => headerSet.has(field)),
+  }));
   draftRule.value.outputColumns = draftRule.value.outputColumns.map((column) => {
     if (
       (column.valueMode === "source" || column.valueMode === "mapping") &&
@@ -155,13 +168,18 @@ function syncDraftWithHeaders(headers: string[]): void {
     }
     return { ...column, ...patch };
   });
+  syncResultFillFieldRules();
 }
 
 function setDraftRule(rule: RuleDefinition): void {
   const nextRule = cloneRuleDefinition(rule);
   nextRule.groupByFields = nextRule.groupByFields.slice(0, 1);
   nextRule.summaryGroupByFields = Array.from(new Set(nextRule.summaryGroupByFields.map((item) => item.trim()).filter(Boolean)));
+  if (nextRule.summaryFillMissingPrimary && !nextRule.resultFill.enabled) {
+    nextRule.resultFill.enabled = true;
+  }
   draftRule.value = nextRule;
+  syncResultFillFieldRules();
   syncTitleVariableConfigs();
 }
 
@@ -210,6 +228,60 @@ function clearGroupBySectionConfig(): void {
   draftRule.value.groupExcludeValuesText = "";
   draftRule.value.groupExcludeMappingSection = "";
   draftRule.value.summaryGroupByFields = [];
+  draftRule.value.summaryFillMissingPrimary = false;
+  draftRule.value.resultFill.enabled = false;
+}
+
+function syncResultFillFieldRules(): void {
+  const fieldRuleMap = new Map(
+    draftRule.value.resultFill.fieldRules.map((item) => [item.targetField.trim(), item] as const),
+  );
+  draftRule.value.resultFill.fieldRules = resultFillTargetFields.value.map((targetField) => {
+    const current = fieldRuleMap.get(targetField);
+    if (!current) {
+      return createEmptyRuleResultFillFieldRule(targetField);
+    }
+    return {
+      ...current,
+      targetField,
+      mappingSourceFields: [...current.mappingSourceFields],
+    };
+  });
+}
+
+function getResultFillRulesByColumn(column: RuleOutputColumn): RuleResultFillFieldRule[] {
+  const targetFields = new Set(getColumnTargetFields(column));
+  if (targetFields.size === 0) {
+    return [];
+  }
+  return draftRule.value.resultFill.fieldRules.filter((item) => targetFields.has(item.targetField));
+}
+
+function handleResultFillEnabledChange(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  draftRule.value.resultFill.enabled = input.checked;
+  if (!draftRule.value.resultFill.enabled) {
+    return;
+  }
+  if (!draftRule.value.resultFill.baselineSourceField) {
+    draftRule.value.resultFill.baselineSourceField = draftRule.value.summaryGroupByFields[0] || "";
+  }
+}
+
+function handleResultFillFieldModeChange(fieldRule: RuleResultFillFieldRule): void {
+  fieldRule.constantValue = "";
+  fieldRule.sourceField = "";
+  fieldRule.mappingSourceFields = [];
+  fieldRule.mappingSection = "";
+  fieldRule.copyFromTargetField = "";
+}
+
+function toggleResultFillMappingSourceField(fieldRule: RuleResultFillFieldRule, header: string): void {
+  if (fieldRule.mappingSourceFields.includes(header)) {
+    fieldRule.mappingSourceFields = fieldRule.mappingSourceFields.filter((item) => item !== header);
+    return;
+  }
+  fieldRule.mappingSourceFields = [...fieldRule.mappingSourceFields, header];
 }
 
 async function handleGroupByEnabledChange(event: Event): Promise<void> {
@@ -453,6 +525,14 @@ watch(
   () => usedTitleVariables.value.join("|"),
   () => {
     syncTitleVariableConfigs();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => resultFillTargetFields.value.join("|"),
+  () => {
+    syncResultFillFieldRules();
   },
   { immediate: true },
 );
@@ -749,6 +829,57 @@ onUnmounted(() => {
       <section class="editor-section">
         <h3 class="editor-section-title">{{ $t("rules.editor.outputTitle") }}</h3>
         <div class="editor-group">
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.resultFillEnabled") }}</span>
+            <label class="switch" :aria-label="$t('rules.fields.resultFillEnabled')">
+              <input
+                :checked="draftRule.resultFill.enabled"
+                type="checkbox"
+                :disabled="!canEdit || !draftRule.groupByEnabled || draftRule.summaryGroupByFields.length === 0"
+                @change="handleResultFillEnabledChange"
+              />
+              <span class="switch-track">
+                <span class="switch-thumb" />
+              </span>
+            </label>
+          </div>
+          <p class="hint-text">{{ $t("rules.messages.resultFillHint") }}</p>
+
+          <template v-if="draftRule.resultFill.enabled">
+            <div class="editor-setting-row">
+              <span class="editor-setting-label">{{ $t("rules.fields.resultFillBaselineSourceField") }}</span>
+              <label class="field-block">
+                <select v-model="draftRule.resultFill.baselineSourceField" :disabled="!canEdit">
+                  <option value="">{{ $t("rules.messages.selectHeader") }}</option>
+                  <option v-for="header in availableHeaders" :key="`fill-baseline-${header}`" :value="header">{{ header }}</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="editor-setting-row">
+              <span class="editor-setting-label">{{ $t("rules.fields.resultFillBaselineMapping") }}</span>
+              <label class="field-block">
+                <select v-model="draftRule.resultFill.baselineMappingSection" :disabled="!canEdit">
+                  <option value="">{{ $t("rules.messages.selectMapping") }}</option>
+                  <option v-for="item in mappingOptions" :key="`fill-baseline-mapping-${item.id}`" :value="item.id">
+                    {{ item.label }} ({{ item.count }})
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <div class="editor-setting-row">
+              <span class="editor-setting-label">{{ $t("rules.fields.resultFillFallbackMode") }}</span>
+              <label class="field-block">
+                <select v-model="draftRule.resultFill.fallbackMode" :disabled="!canEdit">
+                  <option value="unknown">{{ $t("rules.resultFillFallbackModes.unknown") }}</option>
+                  <option value="empty">{{ $t("rules.resultFillFallbackModes.empty") }}</option>
+                  <option value="error">{{ $t("rules.resultFillFallbackModes.error") }}</option>
+                </select>
+              </label>
+            </div>
+          </template>
+
           <table class="rule-table">
           <thead>
             <tr>
@@ -756,6 +887,7 @@ onUnmounted(() => {
               <th>{{ $t("rules.fields.targetField") }}</th>
               <th>{{ $t("rules.fields.valueMode") }}</th>
               <th>{{ $t("rules.fields.valueSource") }}</th>
+              <th>{{ $t("rules.fields.resultFillFieldRules") }}</th>
               <th class="operation-col">{{ $t("rules.fields.operation") }}</th>
             </tr>
           </thead>
@@ -974,6 +1106,102 @@ onUnmounted(() => {
                     <option value="">{{ $t("rules.messages.selectHeader") }}</option>
                     <option v-for="header in availableHeaders" :key="header" :value="header">{{ header }}</option>
                   </select>
+                </template>
+              </td>
+              <td>
+                <template v-if="draftRule.resultFill.enabled">
+                  <div class="mapping-config">
+                    <div
+                      v-for="fieldRule in getResultFillRulesByColumn(column)"
+                      :key="`fill-inline-${column.id}-${fieldRule.targetField}`"
+                      class="fill-rule-inline-block"
+                    >
+                      <span v-if="getColumnTargetFields(column).length > 1" class="fill-rule-target-label">{{ fieldRule.targetField }}</span>
+                      <select v-model="fieldRule.valueMode" :disabled="!canEdit" @change="handleResultFillFieldModeChange(fieldRule)">
+                        <option v-for="mode in resultFillValueModes" :key="`inline-fill-mode-${fieldRule.targetField}-${mode}`" :value="mode">
+                          {{ $t(`rules.resultFillModes.${mode}`) }}
+                        </option>
+                      </select>
+                      <template v-if="fieldRule.valueMode === 'constant'">
+                        <input
+                          v-model="fieldRule.constantValue"
+                          type="text"
+                          :disabled="!canEdit"
+                          :placeholder="$t('rules.fields.placeholderValue')"
+                        />
+                      </template>
+                      <template v-else-if="fieldRule.valueMode === 'mapping'">
+                        <div class="mapping-config">
+                          <select v-model="fieldRule.sourceField" :disabled="!canEdit">
+                            <option value="">{{ $t("rules.messages.selectHeader") }}</option>
+                            <option v-for="header in availableHeaders" :key="`inline-fill-source-${fieldRule.targetField}-${header}`" :value="header">
+                              {{ header }}
+                            </option>
+                          </select>
+                          <select v-model="fieldRule.mappingSection" :disabled="!canEdit">
+                            <option value="">{{ $t("rules.messages.selectMapping") }}</option>
+                            <option v-for="item in mappingOptions" :key="`inline-fill-mapping-${fieldRule.targetField}-${item.id}`" :value="item.id">
+                              {{ item.label }} ({{ item.count }})
+                            </option>
+                          </select>
+                        </div>
+                      </template>
+                      <template v-else-if="fieldRule.valueMode === 'mapping_multi'">
+                        <div class="mapping-config">
+                          <div class="group-options mapping-multi-options">
+                            <label
+                              v-for="header in availableHeaders"
+                              :key="`inline-fill-multi-source-${fieldRule.targetField}-${header}`"
+                              class="group-option"
+                            >
+                              <input
+                                type="checkbox"
+                                :checked="fieldRule.mappingSourceFields.includes(header)"
+                                :disabled="!canEdit"
+                                @change="toggleResultFillMappingSourceField(fieldRule, header)"
+                              />
+                              <button
+                                type="button"
+                                class="group-option-btn"
+                                :class="{ active: fieldRule.mappingSourceFields.includes(header) }"
+                                :disabled="!canEdit"
+                                @click.prevent="toggleResultFillMappingSourceField(fieldRule, header)"
+                              />
+                              <span :title="header">{{ header }}</span>
+                            </label>
+                          </div>
+                          <select v-model="fieldRule.mappingSection" :disabled="!canEdit">
+                            <option value="">{{ $t("rules.messages.selectMapping") }}</option>
+                            <option
+                              v-for="item in mappingOptions"
+                              :key="`inline-fill-multi-mapping-${fieldRule.targetField}-${item.id}`"
+                              :value="item.id"
+                            >
+                              {{ item.label }} ({{ item.count }})
+                            </option>
+                          </select>
+                        </div>
+                      </template>
+                      <template v-else-if="fieldRule.valueMode === 'copy_output'">
+                        <select v-model="fieldRule.copyFromTargetField" :disabled="!canEdit">
+                          <option value="">{{ $t("rules.messages.copyOutputSelectSource") }}</option>
+                          <option
+                            v-for="target in resultFillTargetFields.filter((item) => item !== fieldRule.targetField)"
+                            :key="`inline-fill-copy-${fieldRule.targetField}-${target}`"
+                            :value="target"
+                          >
+                            {{ target }}
+                          </option>
+                        </select>
+                      </template>
+                    </div>
+                    <p v-if="getResultFillRulesByColumn(column).length === 0" class="hint-text">
+                      {{ $t("rules.messages.resultFillNoFields") }}
+                    </p>
+                  </div>
+                </template>
+                <template v-else>
+                  <span class="hint-text">{{ $t("rules.messages.resultFillDisabledConfig") }}</span>
                 </template>
               </td>
               <td>
@@ -1598,6 +1826,20 @@ onUnmounted(() => {
 .mapping-config {
   display: grid;
   gap: 6px;
+}
+
+.fill-rule-inline-block {
+  border: 1px solid var(--stroke-soft);
+  border-radius: 8px;
+  background: var(--bg-input);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.fill-rule-target-label {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
 }
 
 .mapping-multi-options {
