@@ -6,6 +6,9 @@ on:
     tags:
       - "v*"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build (${{ matrix.platform }})
@@ -56,6 +59,21 @@ jobs:
 
       - name: Prepare Bundled Python Runtime
         run: python scripts/prepare_bundled_python.py --platform ${{ matrix.platform }}
+
+      - name: Validate Updater Signing Secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::Missing secret TAURI_SIGNING_PRIVATE_KEY"
+            exit 1
+          fi
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
+            echo "::error::Missing secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            exit 1
+          fi
 
       - name: Build Tauri Bundles
         env:
