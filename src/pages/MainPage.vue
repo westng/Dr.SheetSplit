@@ -593,6 +593,13 @@ watch(allowedImportFormats, () => {
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.history-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .history-empty {
