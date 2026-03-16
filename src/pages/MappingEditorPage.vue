@@ -2,7 +2,7 @@
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useMappingStore } from "../store";
 import type { MappingEntry } from "../types/mapping";
@@ -15,6 +15,7 @@ const MAIN_WINDOW_LABEL = "main";
 
 const appWindow = getCurrentWindow();
 const route = useRoute();
+const router = useRouter();
 const { t } = useI18n();
 const {
   mappingGroups,
@@ -137,19 +138,30 @@ async function saveChanges(shouldClose = false): Promise<void> {
 }
 
 async function closeWindow(): Promise<void> {
+  const isMainWindow = appWindow.label === MAIN_WINDOW_LABEL;
   errorMessage.value = "";
   try {
+    if (isMainWindow) {
+      await router.replace({ name: "main" });
+      return;
+    }
     await appWindow.close();
   } catch (closeError) {
-    try {
-      await appWindow.destroy();
-    } catch (destroyError) {
-      const reason = destroyError instanceof Error ? destroyError.message : String(destroyError ?? "");
-      errorMessage.value = t("mapping.editor.errors.closeFailed", { reason });
-      if (closeError instanceof Error && closeError.message.trim()) {
-        errorMessage.value = `${errorMessage.value} (${closeError.message})`;
+    if (!isMainWindow) {
+      try {
+        await appWindow.destroy();
+        return;
+      } catch (destroyError) {
+        const reason = destroyError instanceof Error ? destroyError.message : String(destroyError ?? "");
+        errorMessage.value = t("mapping.editor.errors.closeFailed", { reason });
+        if (closeError instanceof Error && closeError.message.trim()) {
+          errorMessage.value = `${errorMessage.value} (${closeError.message})`;
+        }
+        return;
       }
     }
+    const reason = closeError instanceof Error ? closeError.message : String(closeError ?? "");
+    errorMessage.value = t("mapping.editor.errors.closeFailed", { reason });
   }
 }
 

@@ -4,7 +4,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useMappingStore, useRuleStore } from "../store";
 import {
   RULE_RESULT_FILL_VALUE_MODES,
@@ -35,6 +35,7 @@ const MAIN_WINDOW_LABEL = "main";
 
 const appWindow = getCurrentWindow();
 const route = useRoute();
+const router = useRouter();
 const { t } = useI18n();
 const { ruleStoreError, saveRule, deleteRule, getRuleById, reloadRules } = useRuleStore();
 const { mappingGroups } = useMappingStore();
@@ -631,9 +632,22 @@ async function handleDeleteCurrentRule(): Promise<void> {
 }
 
 async function closeWindow(): Promise<void> {
+  const isMainWindow = appWindow.label === MAIN_WINDOW_LABEL;
   try {
+    if (isMainWindow) {
+      await router.replace({ name: "main" });
+      return;
+    }
     await appWindow.close();
   } catch {
+    if (!isMainWindow) {
+      try {
+        await appWindow.destroy();
+        return;
+      } catch {
+        // continue to surface close failure
+      }
+    }
     validationErrors.value = [t("rules.messages.closeFailed")];
   }
 }
