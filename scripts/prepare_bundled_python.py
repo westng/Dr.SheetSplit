@@ -48,6 +48,13 @@ def site_packages_path(platform: str, version: tuple[int, int]) -> Path:
     return Path("lib") / f"python{major}.{minor}" / "site-packages"
 
 
+def test_suite_path(platform: str, version: tuple[int, int]) -> Path:
+    major, minor = version
+    if platform == "windows":
+        return Path("Lib") / "test"
+    return Path("lib") / f"python{major}.{minor}" / "test"
+
+
 def ensure_site_packages(path: Path, dry_run: bool) -> None:
     if path.is_symlink() and not path.exists():
         if dry_run:
@@ -78,6 +85,15 @@ def ensure_macos_python3_alias(target_dir: Path, dry_run: bool) -> None:
     alias.symlink_to(fallback.name)
 
 
+def remove_test_suite(path: Path, dry_run: bool) -> None:
+    if not path.exists():
+        return
+    if dry_run:
+        print(f"[dry-run] remove test suite: {path}")
+        return
+    shutil.rmtree(path)
+
+
 def main() -> int:
     args = parse_args()
     source_prefix = Path(args.source_prefix).expanduser().resolve()
@@ -104,6 +120,10 @@ def main() -> int:
 
     ensure_site_packages(
         target_dir / site_packages_path(args.platform, (sys.version_info.major, sys.version_info.minor)),
+        dry_run=args.dry_run,
+    )
+    remove_test_suite(
+        target_dir / test_suite_path(args.platform, (sys.version_info.major, sys.version_info.minor)),
         dry_run=args.dry_run,
     )
 
