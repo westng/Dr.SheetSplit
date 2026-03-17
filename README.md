@@ -204,6 +204,14 @@ join_unique("采购单号", "\\n")
 
 检查「设置 -> 导入导出 -> 允许导入文件格式」是否包含对应扩展名。
 
+### 4. macOS 提示“Dr.SheetSplit”已损坏，无法打开
+
+如果出现“你应该将它移到废纸篓”的提示，可在终端执行：
+
+```bash
+xattr -rd com.apple.quarantine /Applications/Dr.SheetSplit.app
+```
+
 ## 贡献指南
 
 欢迎通过 Issue 和 Pull Request 参与贡献。
