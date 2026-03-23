@@ -159,7 +159,11 @@ fn execute_python(
     payload: &str,
 ) -> Result<Output, String> {
     let mut child = Command::new(python_bin)
+        .arg("-X")
+        .arg("utf8")
         .arg(script_path)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
