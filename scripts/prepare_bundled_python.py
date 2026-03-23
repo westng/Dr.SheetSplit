@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -166,6 +167,79 @@ def normalize_permissions(target_dir: Path, dry_run: bool) -> None:
         path.chmod(normalized)
 
 
+def dependency_lines(path: Path) -> list[str]:
+    result = subprocess.run(
+        ["otool", "-L", str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+
+    lines = result.stdout.splitlines()[1:]
+    dependencies: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        dependencies.append(stripped.split(" (", 1)[0])
+    return dependencies
+
+
+def macos_loader_reference(from_dir: Path, target_path: Path) -> str:
+    relative = Path(os.path.relpath(target_path, from_dir))
+    relative_text = relative.as_posix()
+    if relative_text == ".":
+        relative_text = target_path.name
+    return f"@loader_path/{relative_text}"
+
+
+def retarget_macos_runtime(target_dir: Path, version: tuple[int, int], dry_run: bool) -> None:
+    major, minor = version
+    framework_suffix = f"Python.framework/Versions/{major}.{minor}/Python"
+    bundled_python_dylib = target_dir / "Python"
+    dylib_alias = target_dir / "lib" / f"libpython{major}.{minor}.dylib"
+
+    for path in target_dir.rglob("*"):
+        if not path.is_file():
+            continue
+
+        dependencies = dependency_lines(path)
+        if not dependencies:
+            continue
+
+        for dependency in dependencies:
+            if framework_suffix not in dependency:
+                continue
+
+            new_dependency = macos_loader_reference(path.parent, bundled_python_dylib)
+            command = ["install_name_tool", "-change", dependency, new_dependency, str(path)]
+            if dry_run:
+                print(f"[dry-run] {' '.join(command)}")
+                continue
+            subprocess.run(command, check=True)
+
+    if bundled_python_dylib.exists():
+        command = ["install_name_tool", "-id", "@rpath/Python", str(bundled_python_dylib)]
+        if dry_run:
+            print(f"[dry-run] {' '.join(command)}")
+        else:
+            subprocess.run(command, check=True)
+
+    if dylib_alias.exists():
+        command = [
+            "install_name_tool",
+            "-id",
+            f"@rpath/libpython{major}.{minor}.dylib",
+            str(dylib_alias),
+        ]
+        if dry_run:
+            print(f"[dry-run] {' '.join(command)}")
+        else:
+            subprocess.run(command, check=True)
+
+
 def main() -> int:
     args = parse_args()
     source_prefix = Path(args.source_prefix).expanduser().resolve()
@@ -210,6 +284,11 @@ def main() -> int:
 
     if args.platform == "macos":
         ensure_macos_python3_alias(target_dir, dry_run=args.dry_run)
+        retarget_macos_runtime(
+            target_dir,
+            (sys.version_info.major, sys.version_info.minor),
+            dry_run=args.dry_run,
+        )
 
     interpreter_path = target_dir / expected_interpreter(args.platform)
     if args.dry_run:
