@@ -2,7 +2,7 @@
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onErrorCaptured, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import { useMappingStore, useRuleStore } from "../store";
@@ -50,6 +50,7 @@ const isParsingSource = ref(false);
 const isSaving = ref(false);
 const sortingColumnId = ref("");
 const sortingOverColumnId = ref("");
+const renderFailureMessage = ref("");
 
 let unlistenSetRule: UnlistenFn | undefined;
 
@@ -71,6 +72,35 @@ const canEdit = computed(() => !isSaving.value);
 const titleConflictModes = RULE_SHEET_TITLE_CONFLICT_MODES;
 const resultFillValueModes = RULE_RESULT_FILL_VALUE_MODES;
 const sourceTemplateVariables = computed(() => draftRule.value.sourceHeaders);
+
+function asErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  if (typeof error === "string") {
+    const message = error.trim();
+    if (message) {
+      return message;
+    }
+  }
+
+  if (error && typeof error === "object") {
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") {
+        return serialized;
+      }
+    } catch {
+      // Fall through to generic text below.
+    }
+  }
+
+  return t("rules.messages.ruleLoadFailedUnknown");
+}
 
 function getColumnTargetFields(column: RuleOutputColumn): string[] {
   if (column.valueMode === "conditional_target") {
@@ -108,6 +138,7 @@ const mergeRangeEndCell = computed(() => {
 function resetFeedback(): void {
   validationErrors.value = [];
   actionMessage.value = "";
+  renderFailureMessage.value = "";
 }
 
 function syncDraftWithHeaders(headers: string[]): void {
@@ -177,12 +208,15 @@ function syncDraftWithHeaders(headers: string[]): void {
 
 function setDraftRule(rule: RuleDefinition): void {
   const nextRule = cloneRuleDefinition(rule);
-  nextRule.groupByFields = nextRule.groupByFields.slice(0, 1);
+  nextRule.sourceHeaders = Array.from(new Set(nextRule.sourceHeaders.map((item) => item.trim()).filter(Boolean)));
+  nextRule.groupByFields = Array.from(new Set(nextRule.groupByFields.map((item) => item.trim()).filter(Boolean))).slice(0, 1);
   nextRule.summaryGroupByFields = Array.from(new Set(nextRule.summaryGroupByFields.map((item) => item.trim()).filter(Boolean)));
+  nextRule.outputColumns = nextRule.outputColumns.length > 0 ? nextRule.outputColumns : [createEmptyRuleOutputColumn()];
   if (nextRule.summaryFillMissingPrimary && !nextRule.resultFill.enabled) {
     nextRule.resultFill.enabled = true;
   }
   draftRule.value = nextRule;
+  syncDraftWithHeaders(nextRule.sourceHeaders);
   syncResultFillFieldRules();
   syncTotalRowConfig();
   syncTitleVariableConfigs();
@@ -407,23 +441,30 @@ async function loadRule(ruleId: string | null): Promise<void> {
   resetFeedback();
   sourcePreview.value = null;
 
-  if (!ruleId) {
+  try {
+    if (!ruleId) {
+      activeRuleId.value = "";
+      setDraftRule(createEmptyRuleDefinition());
+      return;
+    }
+
+    await reloadRules();
+    const selected = getRuleById(ruleId);
+    if (!selected) {
+      activeRuleId.value = "";
+      setDraftRule(createEmptyRuleDefinition());
+      validationErrors.value = [t("rules.messages.ruleNotFound")];
+      return;
+    }
+
+    activeRuleId.value = selected.id;
+    setDraftRule(selected);
+  } catch (error) {
+    console.error("Failed to load rule editor payload.", { ruleId, error });
     activeRuleId.value = "";
     setDraftRule(createEmptyRuleDefinition());
-    return;
+    validationErrors.value = [t("rules.messages.ruleLoadFailed", { reason: asErrorMessage(error) })];
   }
-
-  await reloadRules();
-  const selected = getRuleById(ruleId);
-  if (!selected) {
-    activeRuleId.value = "";
-    setDraftRule(createEmptyRuleDefinition());
-    validationErrors.value = [t("rules.messages.ruleNotFound")];
-    return;
-  }
-
-  activeRuleId.value = selected.id;
-  setDraftRule(selected);
 }
 
 function openSourceFilePicker(): void {
@@ -659,6 +700,20 @@ onMounted(async () => {
   });
 });
 
+onErrorCaptured((error, instance, info) => {
+  const detail = asErrorMessage(error);
+  const context = info?.trim() ? ` (${info.trim()})` : "";
+  renderFailureMessage.value = `${detail}${context}`;
+  console.error("Rule editor render failed.", {
+    error,
+    info,
+    component: instance?.$options?.name ?? "RuleEditorPage",
+    ruleId: activeRuleId.value,
+    ruleName: draftRule.value.name,
+  });
+  return false;
+});
+
 onUnmounted(() => {
   stopOutputColumnSort();
   unlistenSetRule?.();
@@ -674,7 +729,11 @@ onUnmounted(() => {
       </button>
     </header>
 
-    <section class="editor-body">
+    <section v-if="renderFailureMessage" class="editor-group error-group">
+      <p>{{ $t("rules.messages.ruleRenderFailed", { reason: renderFailureMessage }) }}</p>
+    </section>
+
+    <section v-else class="editor-body">
       <section v-if="ruleStoreError" class="editor-group error-group">
         <p>{{ $t("rules.messages.dbUnavailable", { reason: ruleStoreError }) }}</p>
       </section>

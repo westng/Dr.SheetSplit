@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -94,6 +95,77 @@ def remove_test_suite(path: Path, dry_run: bool) -> None:
     shutil.rmtree(path)
 
 
+def remove_path(path: Path, dry_run: bool) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if dry_run:
+        print(f"[dry-run] remove path: {path}")
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+        return
+    path.unlink()
+
+
+def prune_runtime(platform: str, target_dir: Path, version: tuple[int, int], dry_run: bool) -> None:
+    major, minor = version
+    lib_dir = target_dir / ("Lib" if platform == "windows" else Path("lib") / f"python{major}.{minor}")
+
+    removable_paths = [
+        lib_dir / "ensurepip",
+        lib_dir / "idlelib",
+        lib_dir / "tkinter",
+        lib_dir / "turtledemo",
+        lib_dir / "site-packages",
+    ]
+
+    if platform == "windows":
+        removable_paths.extend(
+            [
+                target_dir / "Scripts" / "pip.exe",
+                target_dir / "Scripts" / "pip3.exe",
+                target_dir / "Scripts" / f"pip{major}.{minor}.exe",
+            ],
+        )
+    else:
+        removable_paths.extend(
+            [
+                target_dir / "bin" / "pip3",
+                target_dir / "bin" / f"pip3.{minor}",
+                target_dir / "bin" / f"pydoc3.{minor}",
+                target_dir / "bin" / f"idle3.{minor}",
+                target_dir / "bin" / f"2to3-{major}.{minor}",
+            ],
+        )
+
+    for path in removable_paths:
+        remove_path(path, dry_run=dry_run)
+
+    site_packages_dir = lib_dir / "site-packages"
+    ensure_site_packages(site_packages_dir, dry_run=dry_run)
+
+    if lib_dir.exists():
+        for cache_dir in lib_dir.rglob("__pycache__"):
+            remove_path(cache_dir, dry_run=dry_run)
+
+
+def normalize_permissions(target_dir: Path, dry_run: bool) -> None:
+    for path in target_dir.rglob("*"):
+        if dry_run:
+            print(f"[dry-run] chmod normalize: {path}")
+            continue
+
+        mode = path.stat().st_mode
+        if path.is_dir():
+            path.chmod(mode | 0o755)
+            continue
+
+        normalized = 0o644
+        if mode & 0o111:
+            normalized = 0o755
+        path.chmod(normalized)
+
+
 def main() -> int:
     args = parse_args()
     source_prefix = Path(args.source_prefix).expanduser().resolve()
@@ -116,7 +188,9 @@ def main() -> int:
         if target_dir.exists():
             shutil.rmtree(target_dir)
         target_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source_prefix, target_dir, symlinks=True)
+        # Bundle real files instead of host-machine symlinks so the packaged
+        # runtime remains self-contained after moving to end-user machines.
+        shutil.copytree(source_prefix, target_dir, symlinks=False)
 
     ensure_site_packages(
         target_dir / site_packages_path(args.platform, (sys.version_info.major, sys.version_info.minor)),
@@ -126,6 +200,13 @@ def main() -> int:
         target_dir / test_suite_path(args.platform, (sys.version_info.major, sys.version_info.minor)),
         dry_run=args.dry_run,
     )
+    prune_runtime(
+        args.platform,
+        target_dir,
+        (sys.version_info.major, sys.version_info.minor),
+        dry_run=args.dry_run,
+    )
+    normalize_permissions(target_dir, dry_run=args.dry_run)
 
     if args.platform == "macos":
         ensure_macos_python3_alias(target_dir, dry_run=args.dry_run)

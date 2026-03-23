@@ -166,17 +166,34 @@ fn execute_python(
         .spawn()
         .map_err(|err| format!("启动 Python 失败（{}）：{}", python_bin, err))?;
 
-    let stdin = child
+    let mut stdin = child
         .stdin
-        .as_mut()
+        .take()
         .ok_or_else(|| "无法写入 Python stdin。".to_string())?;
-    stdin
-        .write_all(payload.as_bytes())
-        .map_err(|err| format!("写入 Python 请求数据失败：{}", err))?;
 
-    child
+    let write_result = stdin
+        .write_all(payload.as_bytes())
+        .and_then(|_| stdin.flush());
+    drop(stdin);
+
+    let output = child
         .wait_with_output()
-        .map_err(|err| format!("等待 Python 进程结束失败：{}", err))
+        .map_err(|err| format!("等待 Python 进程结束失败：{}", err))?;
+
+    if let Err(err) = write_result {
+        let stderr_text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr_text.is_empty() {
+            String::new()
+        } else {
+            format!("；stderr：{}", stderr_text)
+        };
+        return Err(format!(
+            "写入 Python 请求数据失败（{}）：{}{}",
+            python_bin, err, detail
+        ));
+    }
+
+    Ok(output)
 }
 
 #[tauri::command]
