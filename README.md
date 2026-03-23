@@ -96,7 +96,7 @@ pnpm tauri build
 已提供工作流：`.github/workflows/release-build.yml`
 
 - 手动触发：GitHub Actions 页面运行 `Release Build`
-- 自动触发：推送版本标签（如 `v1.0.0`）
+- 自动触发：推送版本标签（如 `v1.0.1`）
 - 产物：分别上传 `macOS`、`Windows` 的 `src-tauri/target/release/bundle` 目录
 
 说明：
