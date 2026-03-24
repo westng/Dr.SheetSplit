@@ -17,6 +17,7 @@ export type RuleCompatibilityResult = {
 };
 
 const EXPRESSION_FIELD_FUNC_PATTERN = /\b(sum|avg|first|num|join|join_unique|count_non_empty)\s*\(\s*(['"])(.*?)\2/gi;
+const DYNAMIC_DATE_HEADER_PATTERN = /^\d{8}$/;
 
 function getColumnTargetFields(column: RuleOutputColumn): string[] {
   if (column.valueMode === "conditional_target") {
@@ -186,6 +187,54 @@ function validateSheetTemplate(rule: Readonly<RuleDefinition>, errors: string[])
   });
 }
 
+function validateDynamicDateColumns(rule: Readonly<RuleDefinition>, errors: string[]): void {
+  const { dynamicDateColumns } = rule;
+  if (!dynamicDateColumns.enabled) {
+    return;
+  }
+
+  if (rule.sourceGroupHeaderRowIndex > 0 && !rule.sourceGroupName.trim()) {
+    errors.push("启用动态日期列时，请先选择来源指标分组。");
+    return;
+  }
+
+  const staticOutputFields = new Set(
+    rule.outputColumns.flatMap((column) => getColumnTargetFields(column)),
+  );
+  const matchedDateHeaders = rule.sourceHeaders.filter((header) => DYNAMIC_DATE_HEADER_PATTERN.test(header.trim()));
+
+  if (matchedDateHeaders.length === 0) {
+    errors.push("当前来源表头中未识别到日期列（需为 YYYYMMDD）。");
+    return;
+  }
+
+  if (dynamicDateColumns.factorMode === "mapping") {
+    if (!dynamicDateColumns.typeField.trim()) {
+      errors.push("动态日期列缺少类型字段。");
+    }
+    if (!dynamicDateColumns.factorMappingSection.trim()) {
+      errors.push("动态日期列缺少系数映射分组。");
+    }
+  } else if (!dynamicDateColumns.fixedFactor.trim()) {
+    errors.push("动态日期列缺少固定系数。");
+  }
+
+  if (dynamicDateColumns.outputMode === "append_suffix" && !dynamicDateColumns.outputSuffix.trim()) {
+    errors.push("动态日期列追加新列时，输出后缀不能为空。");
+  }
+
+  const dynamicOutputHeaders = matchedDateHeaders.map((header) =>
+    dynamicDateColumns.outputMode === "append_suffix"
+      ? `${header}${dynamicDateColumns.outputSuffix}`
+      : header,
+  );
+  for (const header of dynamicOutputHeaders) {
+    if (staticOutputFields.has(header)) {
+      errors.push(`动态日期列输出字段与静态输出字段重复：${header}`);
+    }
+  }
+}
+
 function collectRequiredHeaders(rule: Readonly<RuleDefinition>): Set<string> {
   const requiredHeaders = new Set<string>();
 
@@ -289,6 +338,13 @@ function collectRequiredHeaders(rule: Readonly<RuleDefinition>): Set<string> {
           }
         }
       }
+    }
+  }
+
+  if (rule.dynamicDateColumns.enabled && rule.dynamicDateColumns.factorMode === "mapping") {
+    const normalized = rule.dynamicDateColumns.typeField.trim();
+    if (normalized) {
+      requiredHeaders.add(normalized);
     }
   }
 
@@ -432,6 +488,7 @@ export function validateRuleDraft(rule: Readonly<RuleDefinition>): RuleDraftVali
     hasColumnErrors(column, index, errors);
   });
 
+  validateDynamicDateColumns(rule, errors);
   validateSheetTemplate(rule, errors);
 
   return {
@@ -560,6 +617,14 @@ export function validateRuleCompatibility(
           errors.push(`结果补齐字段 ${targetField} 的复制来源不存在：${fieldRule.copyFromTargetField}`);
         }
       }
+    }
+  }
+
+  if (rule.dynamicDateColumns.enabled && rule.dynamicDateColumns.factorMode === "mapping") {
+    const entries = mappingGroupMap.get(rule.dynamicDateColumns.factorMappingSection.trim());
+    const hasMappings = Array.isArray(entries) && entries.length > 0;
+    if (!hasMappings) {
+      errors.push(`动态日期列系数映射为空或不存在：${rule.dynamicDateColumns.factorMappingSection || "(未选择)"}`);
     }
   }
 

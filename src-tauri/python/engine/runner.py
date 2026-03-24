@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import re
 from typing import Dict, List, Tuple
 
 from .common import (
@@ -20,6 +21,8 @@ from .mapping import (
     resolve_multi_mapping_value,
 )
 from .title import render_title
+
+DYNAMIC_DATE_HEADER_PATTERN = re.compile(r"^\d{8}$")
 
 
 def resolve_bool(value, fallback: bool) -> bool:
@@ -133,6 +136,87 @@ def append_total_row(
             total_row[column_index] = format_number(total)
 
     return [*sheet_rows, total_row]
+
+
+def resolve_dynamic_date_headers(sheet_headers: List[str]) -> List[str]:
+    return [header for header in sheet_headers if DYNAMIC_DATE_HEADER_PATTERN.match(as_text(header))]
+
+
+def resolve_dynamic_date_output_headers(
+    source_headers: List[str],
+    dynamic_date_config: dict,
+) -> List[str]:
+    output_mode = as_text(dynamic_date_config.get("outputMode")) or "replace"
+    output_suffix = as_text(dynamic_date_config.get("outputSuffix")) or "_折算后"
+    if output_mode == "append_suffix":
+        return [f"{header}{output_suffix}" for header in source_headers]
+    return list(source_headers)
+
+
+def resolve_dynamic_date_factor(
+    rows: List[Dict[str, str]],
+    dynamic_date_config: dict,
+    mapping_indexes: Dict[str, Dict[str, str]],
+) -> float:
+    factor_mode = as_text(dynamic_date_config.get("factorMode")) or "fixed"
+    if factor_mode == "mapping":
+        type_field = as_text(dynamic_date_config.get("typeField"))
+        factor_mapping_section = as_text(dynamic_date_config.get("factorMappingSection"))
+        if not type_field:
+            raise ValueError("动态日期列缺少类型字段。")
+        if not factor_mapping_section:
+            raise ValueError("动态日期列缺少系数映射分组。")
+        type_value = as_text(get_first_row(rows).get(type_field))
+        if any(as_text(row.get(type_field)) != type_value for row in rows):
+            raise ValueError(f"动态日期列类型字段“{type_field}”在同一分组内存在不一致值，无法匹配系数。")
+        if not type_value:
+            raise ValueError(f"动态日期列类型字段“{type_field}”为空，无法匹配系数。")
+        marker = "__dynamic_date_factor_unmatched__"
+        factor_value = resolve_mapping_value(
+            type_value,
+            factor_mapping_section,
+            mapping_indexes,
+            marker,
+        )
+        if factor_value == marker or not as_text(factor_value):
+            raise ValueError(f"动态日期列系数映射未命中：{type_value}")
+        return parse_number(factor_value, f"动态日期列系数({type_value})")
+
+    fixed_factor = as_text(dynamic_date_config.get("fixedFactor")) or "1"
+    return parse_number(fixed_factor, "动态日期列固定系数")
+
+
+def evaluate_dynamic_date_output(
+    rows: List[Dict[str, str]],
+    dynamic_date_source_headers: List[str],
+    dynamic_date_output_headers: List[str],
+    dynamic_date_config: dict,
+    mapping_indexes: Dict[str, Dict[str, str]],
+) -> Tuple[List[str], Dict[str, str]]:
+    if not dynamic_date_source_headers:
+        return [], {}
+
+    if not rows:
+        return (["" for _ in dynamic_date_output_headers], {})
+
+    factor = resolve_dynamic_date_factor(rows, dynamic_date_config, mapping_indexes)
+    values: List[str] = []
+    output_by_field: Dict[str, str] = {}
+    for index, source_header in enumerate(dynamic_date_source_headers):
+        target_header = dynamic_date_output_headers[index]
+        total = 0.0
+        has_numeric = False
+        for row in rows:
+            raw_value = as_text(row.get(source_header))
+            if not raw_value or raw_value == "-":
+                continue
+            total += parse_number(raw_value, source_header)
+            has_numeric = True
+        value = format_number(total * factor) if has_numeric else ""
+        values.append(value)
+        output_by_field[target_header] = value
+
+    return values, output_by_field
 
 
 def infer_placeholder_source_values(
@@ -381,9 +465,13 @@ def run(payload: dict) -> dict:
             continue
         fill_field_rules[target_field] = field_rule
     source_rows = sheet.get("rows") or []
+    source_headers = [as_text(header) for header in (sheet.get("headers") or []) if as_text(header)]
     mapping_groups = payload.get("mappingGroups") or []
     unmatched_fallback = as_text(payload.get("unmatchedFallback")) or "未知错误"
     sheet_template = rule.get("sheetTemplate") or {}
+    dynamic_date_config = rule.get("dynamicDateColumns")
+    if not isinstance(dynamic_date_config, dict):
+        dynamic_date_config = {}
     total_row_config = rule.get("totalRow")
     if not isinstance(total_row_config, dict):
         total_row_config = {}
@@ -394,8 +482,22 @@ def run(payload: dict) -> dict:
     if fill_missing_rows and not fill_baseline_source_field:
         fill_baseline_source_field = as_text(summary_group_fields[0]) if summary_group_fields else ""
 
-    output_headers = resolve_headers(output_columns)
     mapping_indexes = build_mapping_indexes(mapping_groups)
+    dynamic_date_enabled = resolve_bool(dynamic_date_config.get("enabled"), False)
+    dynamic_date_source_headers = (
+        resolve_dynamic_date_headers(source_headers) if dynamic_date_enabled else []
+    )
+    if dynamic_date_enabled and not dynamic_date_source_headers:
+        raise ValueError("当前来源表头中未识别到日期列（需为 YYYYMMDD）。")
+    dynamic_date_output_headers = resolve_dynamic_date_output_headers(
+        dynamic_date_source_headers,
+        dynamic_date_config,
+    )
+    group_header_label_text = as_text(rule.get("sourceGroupDisplayName")) or as_text(rule.get("sourceGroupName"))
+    group_header_enabled = bool(dynamic_date_output_headers) and bool(group_header_label_text)
+    group_header_label = group_header_label_text if group_header_enabled else ""
+    group_header_start_column_index = len(resolve_headers(output_columns)) if group_header_enabled else 0
+    output_headers = [*resolve_headers(output_columns), *dynamic_date_output_headers]
     excluded_group_values = set()
     if group_exclude_mode == "manual_values":
         excluded_group_values = set(parse_exclude_values_text(group_exclude_values_text))
@@ -541,18 +643,27 @@ def run(payload: dict) -> dict:
 
         for rows_in_summary_group, placeholder_summary_values in summary_entries:
             if rows_in_summary_group:
-                values, output_by_field = evaluate_group_output(
+                static_values, output_by_field = evaluate_group_output(
                     output_columns,
                     rows_in_summary_group,
                     mapping_indexes,
                     unmatched_fallback,
                 )
+                dynamic_values, dynamic_output_by_field = evaluate_dynamic_date_output(
+                    rows_in_summary_group,
+                    dynamic_date_source_headers,
+                    dynamic_date_output_headers,
+                    dynamic_date_config,
+                    mapping_indexes,
+                )
+                values = [*static_values, *dynamic_values]
+                output_by_field.update(dynamic_output_by_field)
                 source_row = get_first_row(rows_in_summary_group)
                 row_is_filled.append(False)
             else:
-                values, output_by_field, source_row = build_placeholder_output_row(
+                static_values, output_by_field, source_row = build_placeholder_output_row(
                     output_columns,
-                    output_headers,
+                    resolve_headers(output_columns),
                     placeholder_summary_values,
                     mapping_indexes,
                     unmatched_fallback,
@@ -561,6 +672,7 @@ def run(payload: dict) -> dict:
                     fill_field_rules,
                     fill_fallback_mode,
                 )
+                values = [*static_values, *(["" for _ in dynamic_date_output_headers])]
                 row_is_filled.append(True)
 
             output_rows.append(values)
@@ -591,6 +703,9 @@ def run(payload: dict) -> dict:
                 "name": sheet_name,
                 "title": title,
                 "titleEnabled": title_enabled,
+                "groupHeaderEnabled": group_header_enabled,
+                "groupHeaderLabel": group_header_label,
+                "groupHeaderStartColumnIndex": group_header_start_column_index,
                 "headerRowIndex": header_row_index,
                 "dataStartRowIndex": data_start_row_index,
                 "reservedFooterRows": reserved_footer_rows,

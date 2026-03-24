@@ -35,6 +35,9 @@ export type EngineSheetOutput = {
   name: string;
   title: string;
   titleEnabled: boolean;
+  groupHeaderEnabled: boolean;
+  groupHeaderLabel: string;
+  groupHeaderStartColumnIndex: number;
   headerRowIndex: number;
   dataStartRowIndex: number;
   reservedFooterRows: number;

@@ -289,6 +289,7 @@ export default {
       sourceTitle: "Source Data",
       groupByTitle: "Dynamic Sheet Grouping Fields",
       outputTitle: "Rule Engine Config",
+      dynamicDateTitle: "Dynamic Date Columns",
       sheetTemplateTitle: "Sheet Template",
       totalRowTitle: "Total Row Config",
     },
@@ -314,6 +315,10 @@ export default {
       name: "Rule Name",
       description: "Description",
       sourceSheet: "Source Sheet",
+      sourceHeaderRowIndex: "Source Header Row",
+      sourceGroupHeaderRowIndex: "Source Group Header Row",
+      sourceGroupName: "Source Metric Group",
+      sourceGroupDisplayName: "Group Display Name",
       groupByEnabled: "Enable Dynamic Sheet Grouping",
       groupByField: "Group Field",
       summaryGroupBy: "Summary Group Fields",
@@ -343,6 +348,14 @@ export default {
       dataStartRowIndex: "Data Start Row",
       mergePreview: "Merge Preview",
       titleVariable: "Title Variable",
+      dynamicDateEnabled: "Enable Dynamic Date Columns",
+      dynamicDateDetectedColumns: "Detected Date Columns",
+      dynamicDateFactorMode: "Factor Source",
+      dynamicDateFixedFactor: "Fixed Factor",
+      dynamicDateTypeField: "Type Field",
+      dynamicDateFactorMappingSection: "Factor Mapping",
+      dynamicDateOutputMode: "Output Mode",
+      dynamicDateOutputSuffix: "New Column Suffix",
     },
     modes: {
       source: "Source Field",
@@ -377,6 +390,14 @@ export default {
       empty: "Leave Empty",
       error: "Raise Error",
     },
+    dynamicDateFactorModes: {
+      fixed: "Fixed Factor",
+      mapping: "Map By Type",
+    },
+    dynamicDateOutputModes: {
+      replace: "Replace Date Columns",
+      append_suffix: "Create New Date Columns",
+    },
     messages: {
       copySuffix: "Copy",
       copyCreated: "Rule copy created. Review and save it.",
@@ -387,6 +408,9 @@ export default {
       sourceLoadFailed: "Failed to parse source file.",
       noSourceFile: "No source file uploaded",
       noHeaders: "No headers available. Upload a source file and choose a sheet first.",
+      sourceGroupOptional: "Do not filter metric group",
+      dynamicDateNoDetectedColumns:
+        "No YYYYMMDD date columns were detected. Check the source header row setting.",
       groupByDisableConfirm:
         "Turning this off will clear all dynamic Sheet grouping settings. Continue?",
       sheetTemplateDisableConfirm:
@@ -445,6 +469,8 @@ export default {
       copyOutputSelectSource: "Select output field to copy from",
       dateSelectSource: "Select date source field",
       dateFormatPlaceholder: "For example: YYYY/M/D",
+      dynamicDateHint:
+        "The runtime will re-scan every YYYYMMDD date column in the current file. If the rule saw 11 columns but the next file has 21, all 21 will still be processed.",
       sampleRows: "Sample preview (total rows: {count})",
       saved: "Rule saved to local database.",
       saveFailed: "Failed to save rule. Please retry.",

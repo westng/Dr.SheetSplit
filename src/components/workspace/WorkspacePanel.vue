@@ -6,7 +6,7 @@ import type { ProcessTaskStage } from "../../services/process/types";
 import type { CreateTaskHistoryInput, TaskHistoryLogItem } from "../../types/history";
 import { useHistoryStore, useMappingStore, useRuleStore } from "../../store";
 import { useImportSettings } from "../../composables/useImportSettings";
-import { parseSpreadsheetFile, type SpreadsheetPreview, type SpreadsheetSheetPreview } from "../../utils/spreadsheetParser";
+import { buildSheetPreview, parseSpreadsheetFile, type SpreadsheetPreview, type SpreadsheetSheetData, type SpreadsheetSheetPreview } from "../../utils/spreadsheetParser";
 import { validateRuleCompatibility } from "../../utils/ruleValidator";
 
 const { t } = useI18n();
@@ -28,11 +28,21 @@ const isProcessing = ref(false);
 const processLogs = ref<TaskHistoryLogItem[]>([]);
 
 const selectedRule = computed(() => rules.value.find((item) => item.id === selectedRuleId.value) ?? null);
-const selectedSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
+const selectedSheetData = computed<SpreadsheetSheetData | null>(() => {
   if (!sourcePreview.value) {
     return null;
   }
   return sourcePreview.value.sheets.find((sheet) => sheet.name === selectedSheetName.value) ?? null;
+});
+const selectedSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
+  if (!selectedSheetData.value) {
+    return null;
+  }
+  return buildSheetPreview(selectedSheetData.value, {
+    headerRowIndex: selectedRule.value?.sourceHeaderRowIndex ?? 1,
+    groupHeaderRowIndex: selectedRule.value?.sourceGroupHeaderRowIndex ?? 0,
+    groupName: selectedRule.value?.sourceGroupName ?? "",
+  });
 });
 const compatibilityResult = computed(() => {
   if (!selectedRule.value || !selectedSheetPreview.value) {
@@ -227,11 +237,12 @@ async function processSourceFile(file: File): Promise<void> {
         "info",
       );
     }
-  } catch {
+  } catch (error) {
+    console.error("Failed to parse source file in workspace.", error);
     sourcePreview.value = null;
     selectedSheetName.value = "";
     sourceFileName.value = "";
-    loadError.value = t("workspace.messages.loadFailed");
+    loadError.value = `${t("workspace.messages.loadFailed")} ${toErrorMessage(error)}`.trim();
     appendProcessLog(loadError.value, "error");
   } finally {
     isParsingSource.value = false;

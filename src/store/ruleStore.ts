@@ -4,6 +4,9 @@ import {
   cloneRuleDefinition,
   createEmptyRuleDefinition,
   type RuleConditionalAggregateMode,
+  type RuleDynamicDateColumnConfig,
+  type RuleDynamicDateFactorMode,
+  type RuleDynamicDateOutputMode,
   type RuleDefinition,
   type RuleJoinDelimiter,
   type RuleOutputColumn,
@@ -121,6 +124,10 @@ function normalizeRule(value: unknown): RuleDefinition | null {
 
   const totalRow = normalizeTotalRowConfig(input.totalRow, fallback.totalRow);
   const sheetTemplate = normalizeSheetTemplate(input.sheetTemplate, fallback.sheetTemplate);
+  const dynamicDateColumns = normalizeDynamicDateColumnConfig(
+    input.dynamicDateColumns,
+    fallback.dynamicDateColumns,
+  );
 
   return {
     id: input.id,
@@ -128,6 +135,13 @@ function normalizeRule(value: unknown): RuleDefinition | null {
     description: String(input.description ?? ""),
     sourceFileName: String(input.sourceFileName ?? ""),
     sourceSheetName: String(input.sourceSheetName ?? ""),
+    sourceHeaderRowIndex: Math.max(1, normalizePositiveInt(input.sourceHeaderRowIndex, fallback.sourceHeaderRowIndex)),
+    sourceGroupHeaderRowIndex: Math.max(
+      0,
+      normalizePositiveInt(input.sourceGroupHeaderRowIndex, fallback.sourceGroupHeaderRowIndex),
+    ),
+    sourceGroupName: String(input.sourceGroupName ?? "").trim(),
+    sourceGroupDisplayName: String(input.sourceGroupDisplayName ?? "").trim(),
     sourceHeaders: Array.isArray(input.sourceHeaders) ? input.sourceHeaders.map((item) => String(item)) : [],
     groupByEnabled: typeof input.groupByEnabled === "boolean" ? input.groupByEnabled : false,
     groupByFields: Array.isArray(input.groupByFields) ? input.groupByFields.map((item) => String(item)) : [],
@@ -138,6 +152,7 @@ function normalizeRule(value: unknown): RuleDefinition | null {
       ? input.summaryGroupByFields.map((item) => String(item))
       : [...fallback.summaryGroupByFields],
     summaryFillMissingPrimary: legacySummaryFillMissingPrimary,
+    dynamicDateColumns,
     resultFill,
     totalRow,
     outputColumns,
@@ -237,6 +252,20 @@ function normalizeResultFillFallbackMode(value: unknown): RuleResultFillFallback
     return value;
   }
   return "unknown";
+}
+
+function normalizeDynamicDateFactorMode(value: unknown): RuleDynamicDateFactorMode {
+  if (value === "mapping") {
+    return value;
+  }
+  return "fixed";
+}
+
+function normalizeDynamicDateOutputMode(value: unknown): RuleDynamicDateOutputMode {
+  if (value === "append_suffix") {
+    return value;
+  }
+  return "replace";
 }
 
 function normalizeResultFillFieldRule(value: unknown): RuleResultFillFieldRule | null {
@@ -353,6 +382,26 @@ function normalizeVariableConfig(value: unknown): RuleSheetTemplateVariableConfi
     variableKey,
     conflictMode: normalizeConflictMode(input.conflictMode),
     placeholderValue: String(input.placeholderValue ?? ""),
+  };
+}
+
+function normalizeDynamicDateColumnConfig(
+  value: unknown,
+  fallback: RuleDynamicDateColumnConfig,
+): RuleDynamicDateColumnConfig {
+  if (!value || typeof value !== "object") {
+    return { ...fallback };
+  }
+
+  const input = value as Partial<RuleDynamicDateColumnConfig>;
+  return {
+    enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
+    factorMode: normalizeDynamicDateFactorMode(input.factorMode),
+    fixedFactor: String(input.fixedFactor ?? fallback.fixedFactor ?? "1").trim() || "1",
+    typeField: String(input.typeField ?? "").trim(),
+    factorMappingSection: String(input.factorMappingSection ?? "").trim(),
+    outputMode: normalizeDynamicDateOutputMode(input.outputMode),
+    outputSuffix: String(input.outputSuffix ?? fallback.outputSuffix ?? "_折算后"),
   };
 }
 

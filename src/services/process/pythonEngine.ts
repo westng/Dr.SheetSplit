@@ -15,6 +15,9 @@ function isEngineSheetOutput(value: unknown): value is EngineSheetOutput {
     typeof input.name === "string" &&
     typeof input.title === "string" &&
     typeof input.titleEnabled === "boolean" &&
+    typeof input.groupHeaderEnabled === "boolean" &&
+    typeof input.groupHeaderLabel === "string" &&
+    typeof input.groupHeaderStartColumnIndex === "number" &&
     typeof input.headerRowIndex === "number" &&
     typeof input.dataStartRowIndex === "number" &&
     typeof input.reservedFooterRows === "number" &&

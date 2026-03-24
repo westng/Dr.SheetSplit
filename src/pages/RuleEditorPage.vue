@@ -7,6 +7,8 @@ import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import { useMappingStore, useRuleStore } from "../store";
 import {
+  RULE_DYNAMIC_DATE_FACTOR_MODES,
+  RULE_DYNAMIC_DATE_OUTPUT_MODES,
   RULE_RESULT_FILL_VALUE_MODES,
   RULE_SHEET_TITLE_CONFLICT_MODES,
   cloneRuleDefinition,
@@ -24,7 +26,15 @@ import {
   syncTemplateVariableConfigs,
   toExcelColumnLabel,
 } from "../utils/ruleTemplate";
-import { parseSpreadsheetFile, type SpreadsheetPreview, type SpreadsheetSheetPreview } from "../utils/spreadsheetParser";
+import {
+  buildSheetPreview,
+  extractSheetGroupOptions,
+  inferSheetHeaderLayout,
+  parseSpreadsheetFile,
+  type SpreadsheetPreview,
+  type SpreadsheetSheetData,
+  type SpreadsheetSheetPreview,
+} from "../utils/spreadsheetParser";
 import { validateRuleDraft } from "../utils/ruleValidator";
 
 type RuleEditorPayload = {
@@ -55,6 +65,9 @@ const renderFailureMessage = ref("");
 let unlistenSetRule: UnlistenFn | undefined;
 
 const availableHeaders = computed(() => draftRule.value.sourceHeaders);
+const detectedDynamicDateHeaders = computed(() =>
+  draftRule.value.sourceHeaders.filter((header) => /^\d{8}$/.test(header.trim())),
+);
 const mappingOptions = computed(() =>
   mappingGroups.value.map((group) => ({
     id: group.id,
@@ -62,15 +75,36 @@ const mappingOptions = computed(() =>
     count: group.entries.length,
   })),
 );
-const activeSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
+const rawActiveSheet = computed<SpreadsheetSheetData | null>(() => {
   if (!sourcePreview.value) {
     return null;
   }
   return sourcePreview.value.sheets.find((sheet) => sheet.name === draftRule.value.sourceSheetName) ?? null;
 });
+const availableSourceGroups = computed(() => {
+  if (!rawActiveSheet.value) {
+    return [] as string[];
+  }
+  return extractSheetGroupOptions(rawActiveSheet.value, {
+    headerRowIndex: draftRule.value.sourceHeaderRowIndex,
+    groupHeaderRowIndex: draftRule.value.sourceGroupHeaderRowIndex,
+  });
+});
+const activeSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
+  if (!rawActiveSheet.value) {
+    return null;
+  }
+  return buildSheetPreview(rawActiveSheet.value, {
+    headerRowIndex: draftRule.value.sourceHeaderRowIndex,
+    groupHeaderRowIndex: draftRule.value.sourceGroupHeaderRowIndex,
+    groupName: draftRule.value.sourceGroupName,
+  });
+});
 const canEdit = computed(() => !isSaving.value);
 const titleConflictModes = RULE_SHEET_TITLE_CONFLICT_MODES;
 const resultFillValueModes = RULE_RESULT_FILL_VALUE_MODES;
+const dynamicDateFactorModes = RULE_DYNAMIC_DATE_FACTOR_MODES;
+const dynamicDateOutputModes = RULE_DYNAMIC_DATE_OUTPUT_MODES;
 const sourceTemplateVariables = computed(() => draftRule.value.sourceHeaders);
 
 function asErrorMessage(error: unknown): string {
@@ -202,6 +236,12 @@ function syncDraftWithHeaders(headers: string[]): void {
     }
     return { ...column, ...patch };
   });
+  if (
+    draftRule.value.dynamicDateColumns.typeField &&
+    !headerSet.has(draftRule.value.dynamicDateColumns.typeField)
+  ) {
+    draftRule.value.dynamicDateColumns.typeField = "";
+  }
   syncResultFillFieldRules();
   syncTotalRowConfig();
 }
@@ -479,10 +519,51 @@ function applySheet(sheetName: string): void {
   if (!sheet) {
     return;
   }
+  const inferredLayout = inferSheetHeaderLayout(sheet);
   draftRule.value.sourceSheetName = sheet.name;
-  draftRule.value.sourceHeaders = [...sheet.headers];
-  syncDraftWithHeaders(sheet.headers);
+  draftRule.value.sourceHeaderRowIndex = inferredLayout.headerRowIndex;
+  draftRule.value.sourceGroupHeaderRowIndex = inferredLayout.groupHeaderRowIndex;
+  draftRule.value.sourceGroupName = "";
+  draftRule.value.sourceGroupDisplayName = "";
 }
+
+watch(
+  () => availableSourceGroups.value.join("|"),
+  () => {
+    const previousGroupName = draftRule.value.sourceGroupName;
+    if (
+      draftRule.value.sourceGroupName &&
+      !availableSourceGroups.value.includes(draftRule.value.sourceGroupName)
+    ) {
+      draftRule.value.sourceGroupName = "";
+      if (draftRule.value.sourceGroupDisplayName === previousGroupName) {
+        draftRule.value.sourceGroupDisplayName = "";
+      }
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => draftRule.value.sourceGroupName,
+  (nextValue, previousValue) => {
+    if (!nextValue) {
+      if (
+        draftRule.value.sourceGroupDisplayName &&
+        draftRule.value.sourceGroupDisplayName === previousValue
+      ) {
+        draftRule.value.sourceGroupDisplayName = "";
+      }
+      return;
+    }
+    if (
+      !draftRule.value.sourceGroupDisplayName ||
+      draftRule.value.sourceGroupDisplayName === previousValue
+    ) {
+      draftRule.value.sourceGroupDisplayName = nextValue;
+    }
+  },
+);
 
 async function handleSourceFileChange(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
@@ -508,12 +589,15 @@ async function handleSourceFileChange(event: Event): Promise<void> {
 
     applySheet(preview.sheets[0].name);
     actionMessage.value = t("rules.messages.sourceLoaded", { file: preview.fileName });
-  } catch {
+  } catch (error) {
+    console.error("Failed to parse source file in rule editor.", error);
     sourcePreview.value = null;
     draftRule.value.sourceFileName = "";
     draftRule.value.sourceSheetName = "";
     draftRule.value.sourceHeaders = [];
-    validationErrors.value = [t("rules.messages.sourceLoadFailed")];
+    validationErrors.value = [
+      `${t("rules.messages.sourceLoadFailed")} ${asErrorMessage(error)}`.trim(),
+    ];
   } finally {
     isParsingSource.value = false;
     input.value = "";
@@ -602,6 +686,17 @@ function startOutputColumnSort(columnId: string, event: MouseEvent): void {
   window.addEventListener("mousemove", handleOutputColumnSortMove);
   window.addEventListener("mouseup", stopOutputColumnSort);
 }
+
+watch(
+  () => [activeSheetPreview.value?.name ?? "", activeSheetPreview.value?.headers.join("|") ?? ""].join("::"),
+  () => {
+    if (!sourcePreview.value || !activeSheetPreview.value) {
+      return;
+    }
+    draftRule.value.sourceHeaders = [...activeSheetPreview.value.headers];
+    syncDraftWithHeaders(activeSheetPreview.value.headers);
+  },
+);
 
 watch(
   () => usedTitleVariables.value.join("|"),
@@ -792,6 +887,57 @@ onUnmounted(() => {
           </label>
           </div>
 
+          <div class="editor-setting-row">
+          <span class="editor-setting-label">{{ $t("rules.fields.sourceHeaderRowIndex") }}</span>
+          <label class="field-block">
+            <input
+              v-model.number="draftRule.sourceHeaderRowIndex"
+              type="number"
+              min="1"
+              :disabled="!canEdit || !draftRule.sourceSheetName"
+            />
+          </label>
+          </div>
+
+          <div class="editor-setting-row">
+          <span class="editor-setting-label">{{ $t("rules.fields.sourceGroupHeaderRowIndex") }}</span>
+          <label class="field-block">
+            <input
+              v-model.number="draftRule.sourceGroupHeaderRowIndex"
+              type="number"
+              min="0"
+              :disabled="!canEdit || !draftRule.sourceSheetName"
+            />
+          </label>
+          </div>
+
+          <div class="editor-setting-row">
+          <span class="editor-setting-label">{{ $t("rules.fields.sourceGroupName") }}</span>
+          <label class="field-block">
+            <select
+              v-model="draftRule.sourceGroupName"
+              :disabled="!canEdit || availableSourceGroups.length === 0"
+            >
+              <option value="">{{ $t("rules.messages.sourceGroupOptional") }}</option>
+              <option v-for="group in availableSourceGroups" :key="`source-group-${group}`" :value="group">
+                {{ group }}
+              </option>
+            </select>
+          </label>
+          </div>
+
+          <div class="editor-setting-row">
+          <span class="editor-setting-label">{{ $t("rules.fields.sourceGroupDisplayName") }}</span>
+          <label class="field-block">
+            <input
+              v-model="draftRule.sourceGroupDisplayName"
+              type="text"
+              :disabled="!canEdit || !draftRule.sourceGroupName"
+              :placeholder="draftRule.sourceGroupName || ''"
+            />
+          </label>
+          </div>
+
           <div class="header-wrap">
           <span
             v-for="header in availableHeaders"
@@ -822,6 +968,107 @@ onUnmounted(() => {
             {{ $t("rules.messages.sampleRows", { count: activeSheetPreview.rowCount }) }}
           </p>
           </div>
+        </div>
+      </section>
+
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.dynamicDateTitle") }}</h3>
+        <div class="editor-group">
+          <div class="editor-setting-row">
+          <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateEnabled") }}</span>
+          <label class="switch" :aria-label="$t('rules.fields.dynamicDateEnabled')">
+            <input
+              v-model="draftRule.dynamicDateColumns.enabled"
+              type="checkbox"
+              :disabled="!canEdit"
+            />
+            <span class="switch-track">
+              <span class="switch-thumb" />
+            </span>
+          </label>
+          </div>
+
+          <template v-if="draftRule.dynamicDateColumns.enabled">
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateDetectedColumns") }}</span>
+            <div class="selected-fields">
+              <span
+                v-for="header in detectedDynamicDateHeaders"
+                :key="`dynamic-date-${header}`"
+                class="selected-field-chip"
+              >
+                {{ header }}
+              </span>
+              <p v-if="detectedDynamicDateHeaders.length === 0" class="hint-text">
+                {{ $t("rules.messages.dynamicDateNoDetectedColumns") }}
+              </p>
+            </div>
+          </div>
+
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateFactorMode") }}</span>
+            <label class="field-block">
+              <select v-model="draftRule.dynamicDateColumns.factorMode" :disabled="!canEdit">
+                <option v-for="mode in dynamicDateFactorModes" :key="`dynamic-factor-${mode}`" :value="mode">
+                  {{ $t(`rules.dynamicDateFactorModes.${mode}`) }}
+                </option>
+              </select>
+            </label>
+          </div>
+
+          <div v-if="draftRule.dynamicDateColumns.factorMode === 'fixed'" class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateFixedFactor") }}</span>
+            <label class="field-block">
+              <input v-model="draftRule.dynamicDateColumns.fixedFactor" type="text" :disabled="!canEdit" />
+            </label>
+          </div>
+
+          <template v-else>
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateTypeField") }}</span>
+            <label class="field-block">
+              <select v-model="draftRule.dynamicDateColumns.typeField" :disabled="!canEdit">
+                <option value="">{{ $t("rules.messages.selectHeader") }}</option>
+                <option v-for="header in availableHeaders" :key="`dynamic-type-${header}`" :value="header">{{ header }}</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateFactorMappingSection") }}</span>
+            <label class="field-block">
+              <select v-model="draftRule.dynamicDateColumns.factorMappingSection" :disabled="!canEdit">
+                <option value="">{{ $t("rules.messages.selectMapping") }}</option>
+                <option v-for="item in mappingOptions" :key="`dynamic-factor-mapping-${item.id}`" :value="item.id">
+                  {{ item.label }} ({{ item.count }})
+                </option>
+              </select>
+            </label>
+          </div>
+          </template>
+
+          <div class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateOutputMode") }}</span>
+            <label class="field-block">
+              <select v-model="draftRule.dynamicDateColumns.outputMode" :disabled="!canEdit">
+                <option v-for="mode in dynamicDateOutputModes" :key="`dynamic-output-${mode}`" :value="mode">
+                  {{ $t(`rules.dynamicDateOutputModes.${mode}`) }}
+                </option>
+              </select>
+            </label>
+          </div>
+
+          <div v-if="draftRule.dynamicDateColumns.outputMode === 'append_suffix'" class="editor-setting-row">
+            <span class="editor-setting-label">{{ $t("rules.fields.dynamicDateOutputSuffix") }}</span>
+            <label class="field-block">
+              <input v-model="draftRule.dynamicDateColumns.outputSuffix" type="text" :disabled="!canEdit" />
+            </label>
+          </div>
+
+          <p class="hint-text">
+            {{ $t("rules.messages.dynamicDateHint") }}
+          </p>
+          </template>
         </div>
       </section>
 

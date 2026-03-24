@@ -15,6 +15,8 @@ export type RuleConditionalAggregateMode = "first" | "sum" | "join_newline";
 export type RuleJoinDelimiter = "newline" | "space";
 export type RuleGroupExcludeMode = "none" | "manual_values" | "mapping_group_source";
 export type RuleResultFillFallbackMode = "unknown" | "empty" | "error";
+export type RuleDynamicDateFactorMode = "fixed" | "mapping";
+export type RuleDynamicDateOutputMode = "replace" | "append_suffix";
 export type RuleResultFillValueMode =
   | "inherit"
   | "empty"
@@ -63,6 +65,16 @@ export type RuleSheetTemplate = {
   reservedFooterRows: number;
 };
 
+export type RuleDynamicDateColumnConfig = {
+  enabled: boolean;
+  factorMode: RuleDynamicDateFactorMode;
+  fixedFactor: string;
+  typeField: string;
+  factorMappingSection: string;
+  outputMode: RuleDynamicDateOutputMode;
+  outputSuffix: string;
+};
+
 export type RuleResultFillFieldRule = {
   targetField: string;
   valueMode: RuleResultFillValueMode;
@@ -94,6 +106,10 @@ export type RuleDefinition = {
   description: string;
   sourceFileName: string;
   sourceSheetName: string;
+  sourceHeaderRowIndex: number;
+  sourceGroupHeaderRowIndex: number;
+  sourceGroupName: string;
+  sourceGroupDisplayName: string;
   sourceHeaders: string[];
   groupByEnabled: boolean;
   groupByFields: string[];
@@ -103,6 +119,7 @@ export type RuleDefinition = {
   summaryGroupByFields: string[];
   // Legacy flag kept for backward compatibility with historical rules.
   summaryFillMissingPrimary: boolean;
+  dynamicDateColumns: RuleDynamicDateColumnConfig;
   resultFill: RuleResultFillConfig;
   totalRow: RuleTotalRowConfig;
   outputColumns: RuleOutputColumn[];
@@ -140,6 +157,11 @@ export const RULE_RESULT_FILL_VALUE_MODES: RuleResultFillValueMode[] = [
   "mapping",
   "mapping_multi",
   "copy_output",
+];
+export const RULE_DYNAMIC_DATE_FACTOR_MODES: RuleDynamicDateFactorMode[] = ["fixed", "mapping"];
+export const RULE_DYNAMIC_DATE_OUTPUT_MODES: RuleDynamicDateOutputMode[] = [
+  "replace",
+  "append_suffix",
 ];
 
 export function createEmptyRuleOutputColumn(): RuleOutputColumn {
@@ -190,6 +212,18 @@ export function createEmptyRuleSheetTemplate(): RuleSheetTemplate {
   };
 }
 
+export function createEmptyRuleDynamicDateColumnConfig(): RuleDynamicDateColumnConfig {
+  return {
+    enabled: false,
+    factorMode: "fixed",
+    fixedFactor: "1",
+    typeField: "",
+    factorMappingSection: "",
+    outputMode: "replace",
+    outputSuffix: "_折算后",
+  };
+}
+
 export function createEmptyRuleResultFillFieldRule(targetField = ""): RuleResultFillFieldRule {
   return {
     targetField,
@@ -229,6 +263,10 @@ export function createEmptyRuleDefinition(): RuleDefinition {
     description: "",
     sourceFileName: "",
     sourceSheetName: "",
+    sourceHeaderRowIndex: 1,
+    sourceGroupHeaderRowIndex: 0,
+    sourceGroupName: "",
+    sourceGroupDisplayName: "",
     sourceHeaders: [],
     groupByEnabled: false,
     groupByFields: [],
@@ -237,6 +275,7 @@ export function createEmptyRuleDefinition(): RuleDefinition {
     groupExcludeMappingSection: "",
     summaryGroupByFields: [],
     summaryFillMissingPrimary: false,
+    dynamicDateColumns: createEmptyRuleDynamicDateColumnConfig(),
     resultFill: createEmptyRuleResultFillConfig(),
     totalRow: createEmptyRuleTotalRowConfig(),
     outputColumns: [createEmptyRuleOutputColumn()],
@@ -249,6 +288,10 @@ export function createEmptyRuleDefinition(): RuleDefinition {
 export function cloneRuleDefinition(rule: RuleDefinition): RuleDefinition {
   return {
     ...rule,
+    sourceHeaderRowIndex: rule.sourceHeaderRowIndex,
+    sourceGroupHeaderRowIndex: rule.sourceGroupHeaderRowIndex,
+    sourceGroupName: rule.sourceGroupName,
+    sourceGroupDisplayName: rule.sourceGroupDisplayName,
     sourceHeaders: [...rule.sourceHeaders],
     groupByFields: [...rule.groupByFields],
     groupExcludeMode: rule.groupExcludeMode,
@@ -256,6 +299,9 @@ export function cloneRuleDefinition(rule: RuleDefinition): RuleDefinition {
     groupExcludeMappingSection: rule.groupExcludeMappingSection,
     summaryGroupByFields: [...rule.summaryGroupByFields],
     summaryFillMissingPrimary: rule.summaryFillMissingPrimary,
+    dynamicDateColumns: {
+      ...rule.dynamicDateColumns,
+    },
     resultFill: {
       ...rule.resultFill,
       fieldRules: rule.resultFill.fieldRules.map((item) => ({
