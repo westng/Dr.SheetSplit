@@ -18,10 +18,13 @@ def evaluate_group_output(
     rows: List[Dict[str, str]],
     mapping_indexes: Dict[str, Dict[str, str]],
     unmatched_fallback: str,
+    dynamic_column_headers: Dict[str, List[str]] | None = None,
 ) -> Tuple[List[str], Dict[str, str]]:
     values: List[str] = []
     output_by_field: Dict[str, str] = {}
+    dynamic_output_by_target: Dict[str, List[str]] = {}
     first_row = get_first_row(rows)
+    dynamic_column_headers = dynamic_column_headers or {}
 
     for index, column in enumerate(output_columns):
         mode = as_text(column.get("valueMode")) or "source"
@@ -177,6 +180,100 @@ def evaluate_group_output(
             output_by_field[target_field] = value
             continue
 
+        if mode == "bucket_sum":
+            match_field = as_text(column.get("bucketMatchField"))
+            value_field = as_text(column.get("bucketValueField"))
+            match_value = as_text(column.get("bucketMatchValue")) or target_field
+            if not match_field or not value_field:
+                value = ""
+                values.append(value)
+                output_by_field[target_field] = value
+                continue
+
+            total = 0.0
+            has_numeric = False
+            for row in rows:
+                if as_text(row.get(match_field)) != match_value:
+                    continue
+                raw_value = as_text(row.get(value_field))
+                if not raw_value or raw_value == "-":
+                    continue
+                total += parse_number(raw_value, value_field)
+                has_numeric = True
+
+            value = format_number(total) if has_numeric else ""
+            values.append(value)
+            output_by_field[target_field] = value
+            continue
+
+        if mode == "dynamic_bucket_sum":
+            match_field = as_text(column.get("bucketMatchField"))
+            value_field = as_text(column.get("bucketValueField"))
+            dynamic_headers = dynamic_column_headers.get(target_field, [])
+            dynamic_output_by_target[target_field] = dynamic_headers
+            for dynamic_header in dynamic_headers:
+                total = 0.0
+                has_numeric = False
+                for row in rows:
+                    if as_text(row.get(match_field)) != dynamic_header:
+                        continue
+                    raw_value = as_text(row.get(value_field))
+                    if not raw_value or raw_value == "-":
+                        continue
+                    total += parse_number(raw_value, value_field)
+                    has_numeric = True
+                value = format_number(total) if has_numeric else ""
+                values.append(value)
+                output_by_field[dynamic_header] = value
+            continue
+
+        if mode == "output_sum" or mode == "output_avg":
+            source_fields = [as_text(field) for field in column.get("outputSourceFields", []) if as_text(field)]
+            total = 0.0
+            has_numeric = False
+            for source_target in source_fields:
+                raw_value = as_text(output_by_field.get(source_target))
+                if not raw_value:
+                    continue
+                total += parse_number(raw_value, source_target)
+                has_numeric = True
+
+            if not has_numeric:
+                value = ""
+            elif mode == "output_avg":
+                divisor = len(source_fields)
+                value = format_number(total / divisor) if divisor > 0 else ""
+            else:
+                value = format_number(total)
+
+            values.append(value)
+            output_by_field[target_field] = value
+            continue
+
+        if mode == "dynamic_output_sum" or mode == "dynamic_output_avg":
+            reference_target = as_text(column.get("dynamicReferenceTargetField"))
+            source_fields = dynamic_output_by_target.get(reference_target, [])
+            total = 0.0
+            has_numeric = False
+            for source_target in source_fields:
+                raw_value = as_text(output_by_field.get(source_target))
+                if not raw_value:
+                    continue
+                total += parse_number(raw_value, source_target)
+                has_numeric = True
+
+            if not has_numeric:
+                value = ""
+            elif mode == "dynamic_output_avg":
+                divisor = len(source_fields)
+                value = format_number(total / divisor) if divisor > 0 else ""
+            else:
+                value = format_number(total)
+
+            values.append(value)
+            output_by_field[target_field] = value
+            continue
+
         if mode == "copy_output":
             source_target = as_text(column.get("copyFromTargetField"))
             value = as_text(output_by_field.get(source_target))
@@ -207,7 +304,13 @@ def evaluate_group_output(
                 value = ""
             else:
                 value = normalize_expression_result(
-                    evaluate_expression(expression_text, rows, first_row)
+                    evaluate_expression(
+                        expression_text,
+                        rows,
+                        first_row,
+                        output_by_field,
+                        unmatched_fallback,
+                    )
                 )
             values.append(value)
             output_by_field[target_field] = value

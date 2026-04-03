@@ -15,13 +15,16 @@ export type ProcessTaskInput = {
       readonly target: string;
     }>;
   }>;
-  sheet: ProcessSheetInput;
+  sheet?: ProcessSheetInput;
+  datasetId?: string;
+  sourceSheetName?: string;
   sourceFileName: string;
   exportDirectory: string;
   unmatchedFallback: string;
 };
 
 export type ProcessTaskStage =
+  | "prepare_data"
   | "invoke_engine"
   | "build_workbook"
   | "resolve_output_path"

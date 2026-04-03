@@ -1,4 +1,4 @@
-import * as XLSX from "xlsx";
+import { invoke } from "@tauri-apps/api/core";
 
 export type SpreadsheetSheetPreview = {
   name: string;
@@ -11,14 +11,39 @@ export type SpreadsheetSheetPreview = {
 export type SpreadsheetSheetData = {
   name: string;
   rawRows: string[][];
+  rowCount: number;
+  dataMode: "header" | "preview" | "full";
+};
+
+export type SpreadsheetSheetSummary = {
+  name: string;
+  rowCount: number;
+  columnCount: number;
+  previewRowCount: number;
 };
 
 export type SpreadsheetPreview = {
+  datasetId: string;
   fileName: string;
-  sheets: SpreadsheetSheetData[];
+  importedAtMs: number;
+  sheets: SpreadsheetSheetSummary[];
 };
 
 const DATE_HEADER_PATTERN = /^\d{8}$/;
+
+type SpreadsheetDatasetImportResponse = {
+  datasetId: string;
+  fileName: string;
+  importedAtMs: number;
+  sheets: SpreadsheetSheetSummary[];
+};
+
+type SpreadsheetDatasetSheetRowsResponse = {
+  name: string;
+  rawRows: string[][];
+  rowCount: number;
+  dataMode?: "header" | "preview" | "full";
+};
 
 export type SpreadsheetSheetHeaderLayout = {
   headerRowIndex: number;
@@ -43,32 +68,48 @@ function toDisplayValue(value: unknown): string {
   return String(value);
 }
 
-function parseSheet(workbook: XLSX.WorkBook, sheetName: string): SpreadsheetSheetData {
-  const worksheet = workbook.Sheets[sheetName];
-  const rawRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
-    header: 1,
-    raw: false,
-    defval: "",
-    blankrows: false,
-  });
+function countDateHeaders(row: string[]): number {
+  return row.reduce((count, cell) => (DATE_HEADER_PATTERN.test(String(cell ?? "").trim()) ? count + 1 : count), 0);
+}
 
-  if (rawRows.length === 0) {
-    return {
-      name: sheetName,
-      rawRows: [],
-    };
-  }
-
+function normalizeSheetRows(input: SpreadsheetDatasetSheetRowsResponse): SpreadsheetSheetData {
   return {
-    name: sheetName,
-    rawRows: rawRows.map((row) =>
-      Array.isArray(row) ? row.map((cell) => toDisplayValue(cell)) : [],
-    ),
+    name: String(input.name ?? "").trim(),
+    rawRows: Array.isArray(input.rawRows)
+      ? input.rawRows.map((row) =>
+          Array.isArray(row) ? row.map((cell) => toDisplayValue(cell)) : [],
+        )
+      : [],
+    rowCount: Number(input.rowCount ?? 0),
+    dataMode: input.dataMode === "preview" || input.dataMode === "full" ? input.dataMode : "header",
   };
 }
 
-function countDateHeaders(row: string[]): number {
-  return row.reduce((count, cell) => (DATE_HEADER_PATTERN.test(String(cell ?? "").trim()) ? count + 1 : count), 0);
+function normalizePreview(input: SpreadsheetDatasetImportResponse): SpreadsheetPreview {
+  return {
+    datasetId: String(input.datasetId ?? "").trim(),
+    fileName: String(input.fileName ?? "").trim(),
+    importedAtMs: Number(input.importedAtMs ?? 0),
+    sheets: Array.isArray(input.sheets)
+      ? input.sheets.map((sheet) => ({
+          name: String(sheet.name ?? "").trim(),
+          rowCount: Number(sheet.rowCount ?? 0),
+          columnCount: Number(sheet.columnCount ?? 0),
+          previewRowCount: Number(sheet.previewRowCount ?? 0),
+        }))
+      : [],
+  };
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 export function inferSheetHeaderLayout(sheet: SpreadsheetSheetData): SpreadsheetSheetHeaderLayout {
@@ -155,6 +196,16 @@ export function buildSheetPreview(
   }
 
   const headers = columns.map((column) => column.header);
+  if (sheet.dataMode === "header") {
+    return {
+      name: sheet.name,
+      headers,
+      rows: [],
+      sampleRows: [],
+      rowCount: 0,
+    };
+  }
+
   const dataRows = sheet.rawRows.slice(normalizedHeaderRowIndex);
   const normalizedRows = dataRows.map((row) => {
     const values = Array.isArray(row) ? row : [];
@@ -169,7 +220,9 @@ export function buildSheetPreview(
     headers,
     rows: normalizedRows,
     sampleRows: normalizedRows.slice(0, 30),
-    rowCount: normalizedRows.length,
+    rowCount: typeof sheet.rowCount === "number" && sheet.rowCount > 0
+      ? Math.max(0, sheet.rowCount - normalizedHeaderRowIndex)
+      : normalizedRows.length,
   };
 }
 
@@ -216,14 +269,49 @@ export function extractSheetGroupOptions(
 
 export async function parseSpreadsheetFile(file: File): Promise<SpreadsheetPreview> {
   const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, {
-    type: "array",
-    cellDates: false,
-  });
-
-  const sheets = workbook.SheetNames.map((sheetName) => parseSheet(workbook, sheetName));
-  return {
+  const payload = await invoke<SpreadsheetDatasetImportResponse>("import_spreadsheet_dataset", {
     fileName: file.name,
-    sheets,
-  };
+    contentBase64: arrayBufferToBase64(buffer),
+  });
+  return normalizePreview(payload);
+}
+
+export async function parseSpreadsheetPath(filePath: string): Promise<SpreadsheetPreview> {
+  const payload = await invoke<SpreadsheetDatasetImportResponse>("import_spreadsheet_dataset_from_path", {
+    filePath,
+  });
+  return normalizePreview(payload);
+}
+
+export async function readSpreadsheetSheetPreview(
+  datasetId: string,
+  sheetName: string,
+): Promise<SpreadsheetSheetData> {
+  const payload = await invoke<SpreadsheetDatasetSheetRowsResponse>("read_dataset_sheet_preview", {
+    datasetId,
+    sheetName,
+  });
+  return normalizeSheetRows(payload);
+}
+
+export async function readSpreadsheetSheetHeader(
+  datasetId: string,
+  sheetName: string,
+): Promise<SpreadsheetSheetData> {
+  const payload = await invoke<SpreadsheetDatasetSheetRowsResponse>("read_dataset_sheet_header", {
+    datasetId,
+    sheetName,
+  });
+  return normalizeSheetRows(payload);
+}
+
+export async function readSpreadsheetSheetRows(
+  datasetId: string,
+  sheetName: string,
+): Promise<SpreadsheetSheetData> {
+  const payload = await invoke<SpreadsheetDatasetSheetRowsResponse>("read_dataset_sheet_rows", {
+    datasetId,
+    sheetName,
+  });
+  return normalizeSheetRows(payload);
 }

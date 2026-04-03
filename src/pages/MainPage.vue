@@ -4,6 +4,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import ConfigPanel from "../components/config/ConfigPanel.vue";
+import EngineConfigPanel from "../components/engine/EngineConfigPanel.vue";
+import EngineProcessPanel from "../components/engine/EngineProcessPanel.vue";
 import HistoryDetailPanel from "../components/history/HistoryDetailPanel.vue";
 import MappingPanel from "../components/mapping/MappingPanel.vue";
 import WorkspacePanel from "../components/workspace/WorkspacePanel.vue";
@@ -56,8 +58,14 @@ const contentTitle = computed(() => {
   if (activeMenu.value === "rules") {
     return t("content.rules");
   }
+  if (activeMenu.value === "engineProcess") {
+    return t("content.engineProcess");
+  }
   if (activeMenu.value === "mapping") {
     return t("content.mapping");
+  }
+  if (activeMenu.value === "engineRules") {
+    return t("content.engineRules");
   }
   if (activeMenu.value === "settings") {
     return t("content.settings");
@@ -121,14 +129,8 @@ watch(allowedImportFormats, () => {
 <template>
   <div class="main-shell">
     <div class="top-drag-region" data-tauri-drag-region="true" @mousedown.capture="handleTopDragFallback" />
-    <button
-      type="button"
-      class="top-action-btn"
-      data-no-drag="true"
-      :aria-label="$t('topBar.openGithub')"
-      :title="$t('topBar.openGithub')"
-      @click="openGithubRepo"
-    >
+    <button type="button" class="top-action-btn" data-no-drag="true" :aria-label="$t('topBar.openGithub')"
+      :title="$t('topBar.openGithub')" @click="openGithubRepo">
       <svg viewBox="0 0 24 24" class="top-action-icon" aria-hidden="true">
         <path
           d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.53.1.72-.22.72-.5v-1.94c-2.94.64-3.56-1.24-3.56-1.24-.48-1.23-1.17-1.56-1.17-1.56-.96-.66.07-.65.07-.65 1.06.08 1.62 1.09 1.62 1.09.95 1.61 2.48 1.14 3.08.87.1-.67.37-1.14.67-1.4-2.35-.27-4.83-1.17-4.83-5.24 0-1.16.41-2.12 1.09-2.86-.1-.27-.47-1.36.1-2.84 0 0 .9-.29 2.95 1.09a10.31 10.31 0 0 1 5.37 0c2.05-1.38 2.95-1.09 2.95-1.09.57 1.48.2 2.57.1 2.84.68.74 1.09 1.7 1.09 2.86 0 4.08-2.49 4.97-4.86 5.23.38.33.72.98.72 1.97v2.92c0 .28.19.61.73.5A10.5 10.5 0 0 0 12 1.5Z" />
@@ -156,12 +158,28 @@ watch(allowedImportFormats, () => {
             <small>{{ $t("sidebar.process.description") }}</small>
           </span>
         </button>
+        <button class="menu-card" :class="{ active: activeMenu === 'engineProcess' }" type="button"
+          @click="activeMenu = 'engineProcess'; activeHistoryId = ''">
+          <span class="menu-icon">T</span>
+          <span class="menu-meta">
+            <strong>{{ $t("sidebar.engineProcess.title") }}</strong>
+            <small>{{ $t("sidebar.engineProcess.description") }}</small>
+          </span>
+        </button>
         <button class="menu-card" :class="{ active: activeMenu === 'rules' }" type="button"
           @click="activeMenu = 'rules'">
           <span class="menu-icon">R</span>
           <span class="menu-meta">
             <strong>{{ $t("sidebar.rules.title") }}</strong>
             <small>{{ $t("sidebar.rules.description") }}</small>
+          </span>
+        </button>
+        <button class="menu-card" :class="{ active: activeMenu === 'engineRules' }" type="button"
+          @click="activeMenu = 'engineRules'">
+          <span class="menu-icon">E</span>
+          <span class="menu-meta">
+            <strong>{{ $t("sidebar.engineRules.title") }}</strong>
+            <small>{{ $t("sidebar.engineRules.description") }}</small>
           </span>
         </button>
         <button class="menu-card" :class="{ active: activeMenu === 'mapping' }" type="button"
@@ -177,12 +195,7 @@ watch(allowedImportFormats, () => {
       <section class="nav-section history-section">
         <div class="section-header">
           <h2>{{ $t("sidebar.history") }}</h2>
-          <button
-            v-if="historyItems.length > 0"
-            type="button"
-            class="section-link-btn"
-            @click="clearHistory"
-          >
+          <button v-if="historyItems.length > 0" type="button" class="section-link-btn" @click="clearHistory">
             {{ $t("sidebar.clearHistory") }}
           </button>
         </div>
@@ -221,8 +234,16 @@ watch(allowedImportFormats, () => {
         <ConfigPanel />
       </section>
 
+      <section v-else-if="activeMenu === 'engineProcess'" class="content-body">
+        <EngineProcessPanel />
+      </section>
+
       <section v-else-if="activeMenu === 'mapping'" class="content-body">
         <MappingPanel />
+      </section>
+
+      <section v-else-if="activeMenu === 'engineRules'" class="content-body">
+        <EngineConfigPanel />
       </section>
 
       <section v-else-if="activeMenu === 'settings'" class="content-body settings-page">
@@ -263,8 +284,9 @@ watch(allowedImportFormats, () => {
             <span class="settings-label">{{ $t("settings.theme.color") }}</span>
             <div class="color-palette">
               <button v-for="color in accentColors" :key="color.id" type="button" class="color-dot"
-                :class="{ active: accentColor === color.id }" :title="$t(color.labelKey)" :aria-label="$t(color.labelKey)"
-                :style="{ backgroundColor: color.hex }" @click="accentColor = color.id" />
+                :class="{ active: accentColor === color.id }" :title="$t(color.labelKey)"
+                :aria-label="$t(color.labelKey)" :style="{ backgroundColor: color.hex }"
+                @click="accentColor = color.id" />
             </div>
           </div>
         </div>
@@ -286,14 +308,9 @@ watch(allowedImportFormats, () => {
               <span class="settings-label">{{ $t("settings.importFormats.label") }}</span>
               <span class="settings-value">{{ $t("settings.importFormats.hint") }}</span>
             </div>
-            <input
-              v-model="importFormatsText"
-              type="text"
-              class="format-input"
-              :placeholder="$t('settings.importFormats.placeholder')"
-              @keydown.enter.prevent="applyImportFormatsText"
-              @blur="applyImportFormatsText"
-            />
+            <input v-model="importFormatsText" type="text" class="format-input"
+              :placeholder="$t('settings.importFormats.placeholder')" @keydown.enter.prevent="applyImportFormatsText"
+              @blur="applyImportFormatsText" />
             <p class="format-message">
               {{
                 $t("settings.importFormats.builtinLocked", {
@@ -358,8 +375,7 @@ watch(allowedImportFormats, () => {
           <div class="settings-footer-meta">
             <span>{{ $t("settings.footer.author") }}</span>
             <button type="button" class="settings-footer-github" :aria-label="$t('topBar.openGithub')"
-              :title="$t('topBar.openGithub')"
-              @click="openGithubRepo">
+              :title="$t('topBar.openGithub')" @click="openGithubRepo">
               <svg viewBox="0 0 24 24" class="settings-footer-icon" aria-hidden="true">
                 <path
                   d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.53.1.72-.22.72-.5v-1.94c-2.94.64-3.56-1.24-3.56-1.24-.48-1.23-1.17-1.56-1.17-1.56-.96-.66.07-.65.07-.65 1.06.08 1.62 1.09 1.62 1.09.95 1.61 2.48 1.14 3.08.87.1-.67.37-1.14.67-1.4-2.35-.27-4.83-1.17-4.83-5.24 0-1.16.41-2.12 1.09-2.86-.1-.27-.47-1.36.1-2.84 0 0 .9-.29 2.95 1.09a10.31 10.31 0 0 1 5.37 0c2.05-1.38 2.95-1.09 2.95-1.09.57 1.48.2 2.57.1 2.84.68.74 1.09 1.7 1.09 2.86 0 4.08-2.49 4.97-4.86 5.23.38.33.72.98.72 1.97v2.92c0 .28.19.61.73.5A10.5 10.5 0 0 0 12 1.5Z" />
@@ -379,7 +395,7 @@ watch(allowedImportFormats, () => {
 
 <style scoped>
 .main-shell {
-  --titlebar-height: 44px;
+  --titlebar-height: 20px;
   position: relative;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);

@@ -101,6 +101,7 @@ def append_total_row(
     sheet_headers: List[str],
     sheet_rows: List[List[str]],
     total_row_config: dict,
+    dynamic_column_headers: Dict[str, List[str]] | None = None,
 ) -> List[List[str]]:
     if not sheet_headers:
         return sheet_rows
@@ -109,16 +110,51 @@ def append_total_row(
     if not total_row_enabled:
         return sheet_rows
 
-    sum_fields = [as_text(field) for field in (total_row_config.get("sumFields") or []) if as_text(field)]
+    configured_sum_fields = [
+        as_text(field) for field in (total_row_config.get("sumFields") or []) if as_text(field)
+    ]
     label = as_text(total_row_config.get("label")) or "总计"
     label_field = as_text(total_row_config.get("labelField"))
     header_index_map = {header: index for index, header in enumerate(sheet_headers)}
+    dynamic_column_headers = dynamic_column_headers or {}
 
     total_row = ["" for _ in sheet_headers]
     if label_field and label_field in header_index_map:
         total_row[header_index_map[label_field]] = label
     else:
         total_row[0] = label
+
+    sum_fields: List[str] = []
+    for field in configured_sum_fields:
+        if field in header_index_map:
+            sum_fields.append(field)
+            continue
+        expanded_headers = dynamic_column_headers.get(field, [])
+        for expanded_header in expanded_headers:
+            if expanded_header in header_index_map:
+                sum_fields.append(expanded_header)
+    sum_fields = list(dict.fromkeys(sum_fields))
+    if not sum_fields:
+        for index, header in enumerate(sheet_headers):
+            if label_field and header == label_field:
+                continue
+            if not label_field and index == 0:
+                continue
+
+            has_number = False
+            for row in sheet_rows:
+                cell_value = as_text(row[index]) if index < len(row) else ""
+                if not cell_value:
+                    continue
+                try:
+                    parse_number(cell_value, header)
+                    has_number = True
+                    break
+                except ValueError:
+                    has_number = False
+                    break
+            if has_number:
+                sum_fields.append(header)
 
     for field in sum_fields:
         column_index = header_index_map.get(field)
@@ -130,8 +166,13 @@ def append_total_row(
             cell_value = as_text(row[column_index]) if column_index < len(row) else ""
             if not cell_value:
                 continue
-            total += parse_number(cell_value, field)
-            has_number = True
+            try:
+                total += parse_number(cell_value, field)
+                has_number = True
+            except ValueError:
+                # Total rows should be resilient to mixed text/numeric columns
+                # such as mapped price fields that may still contain fallback text.
+                continue
         if has_number:
             total_row[column_index] = format_number(total)
 
@@ -428,6 +469,261 @@ def build_placeholder_output_row(
     return values, output_by_field, source_values
 
 
+def normalize_source_rows(source_rows: List[dict]) -> List[Dict[str, str]]:
+    normalized_rows: List[Dict[str, str]] = []
+    for raw_row in source_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        normalized_rows.append({str(key): as_text(value) for key, value in raw_row.items()})
+    return normalized_rows
+
+
+def source_filter_matches(row: Dict[str, str], filter_config: dict) -> bool:
+    field = as_text(filter_config.get("field"))
+    if not field:
+        return True
+
+    operator = as_text(filter_config.get("operator")) or "contains_any"
+    if operator != "contains_any":
+        return True
+
+    keywords = [as_text(item) for item in (filter_config.get("keywords") or []) if as_text(item)]
+    if not keywords:
+        return True
+
+    field_value = as_text(row.get(field))
+    return any(keyword in field_value for keyword in keywords)
+
+
+def apply_source_filters(source_rows: List[Dict[str, str]], source_filters: List[dict]) -> List[Dict[str, str]]:
+    if not source_filters:
+        return source_rows
+
+    filtered_rows: List[Dict[str, str]] = []
+    for row in source_rows:
+        matched = True
+        for filter_config in source_filters:
+            if not isinstance(filter_config, dict):
+                continue
+            if not source_filter_matches(row, filter_config):
+                matched = False
+                break
+        if matched:
+            filtered_rows.append(row)
+    return filtered_rows
+
+
+def resolve_dynamic_bucket_headers(output_columns: List[dict], source_rows: List[Dict[str, str]]) -> Dict[str, List[str]]:
+    result: Dict[str, List[str]] = {}
+    used_headers = set()
+    static_headers = set(resolve_headers(output_columns))
+
+    for index, column in enumerate(output_columns):
+        mode = as_text(column.get("valueMode")) or "source"
+        if mode != "dynamic_bucket_sum":
+            continue
+
+        target_field = as_text(column.get("targetField")) or f"Column_{index + 1}"
+        match_field = as_text(column.get("bucketMatchField"))
+        values = {as_text(row.get(match_field)) for row in source_rows if as_text(row.get(match_field))}
+        dynamic_headers = sorted(values)
+
+        for header in dynamic_headers:
+            if header in static_headers:
+                raise ValueError(f"动态列“{header}”与现有输出字段重名，无法生成。")
+            if header in used_headers:
+                raise ValueError(f"动态列“{header}”重复生成，无法输出。")
+            used_headers.add(header)
+
+        result[target_field] = dynamic_headers
+
+    return result
+
+
+def resolve_pivot_headers(rows: List[Dict[str, str]], pivot_config: dict) -> List[str]:
+    whitelist = [as_text(item) for item in (pivot_config.get("columnWhitelist") or []) if as_text(item)]
+    if whitelist:
+        return whitelist
+
+    column_field = as_text(pivot_config.get("columnField"))
+    values = {as_text(row.get(column_field)) for row in rows if as_text(row.get(column_field))}
+    return sorted(values)
+
+
+def build_pivot_sheet_rows(
+    rows_in_sheet: List[Dict[str, str]],
+    row_group_fields: List[str],
+    pivot_headers: List[str],
+    pivot_config: dict,
+) -> Tuple[List[List[str]], List[dict]]:
+    column_field = as_text(pivot_config.get("columnField"))
+    value_field = as_text(pivot_config.get("valueField"))
+    include_total_column = resolve_bool(pivot_config.get("includeTotalColumn"), True)
+    total_column_label = as_text(pivot_config.get("totalColumnLabel")) or "总计"
+    include_average_column = resolve_bool(pivot_config.get("includeAverageColumn"), True)
+    average_column_label = as_text(pivot_config.get("averageColumnLabel")) or "日均"
+    static_value_columns = [
+        as_text(item) for item in (pivot_config.get("staticValueColumns") or []) if as_text(item)
+    ]
+
+    grouped_entries: "OrderedDict[str, dict]" = OrderedDict()
+    pivot_header_set = set(pivot_headers)
+    for row in rows_in_sheet:
+        group_key = build_group_key(row, row_group_fields)
+        if group_key not in grouped_entries:
+            grouped_entries[group_key] = {
+                "source": row,
+                "row_values": {field: as_text(row.get(field)) for field in row_group_fields},
+                "pivot_values": {header: 0.0 for header in pivot_headers},
+                "pivot_has_value": {header: False for header in pivot_headers},
+            }
+
+        column_value = as_text(row.get(column_field))
+        if not column_value or column_value not in pivot_header_set:
+            continue
+
+        raw_value = as_text(row.get(value_field))
+        if not raw_value or raw_value == "-":
+            continue
+
+        grouped_entries[group_key]["pivot_values"][column_value] += parse_number(raw_value, value_field)
+        grouped_entries[group_key]["pivot_has_value"][column_value] = True
+
+    output_rows: List[List[str]] = []
+    row_payloads: List[dict] = []
+    for entry in grouped_entries.values():
+        output_by_field = dict(entry["row_values"])
+        row_values = [as_text(entry["row_values"].get(field)) for field in row_group_fields]
+        numeric_values: List[float] = []
+
+        for header in pivot_headers:
+            has_value = bool(entry["pivot_has_value"].get(header))
+            value = format_number(entry["pivot_values"].get(header, 0.0)) if has_value else ""
+            row_values.append(value)
+            output_by_field[header] = value
+            if has_value:
+                numeric_values.append(entry["pivot_values"].get(header, 0.0))
+
+        if include_total_column:
+            total_value = format_number(sum(numeric_values)) if numeric_values else ""
+            row_values.append(total_value)
+            output_by_field[total_column_label] = total_value
+
+        if include_average_column:
+            divisor = len(pivot_headers)
+            avg_value = format_number(sum(numeric_values) / divisor) if numeric_values and divisor > 0 else ""
+            row_values.append(avg_value)
+            output_by_field[average_column_label] = avg_value
+
+        for header in static_value_columns:
+            row_values.append("")
+            output_by_field[header] = ""
+
+        output_rows.append(row_values)
+        row_payloads.append(
+            {
+                "source": entry["source"],
+                "output": output_by_field,
+                "values": row_values,
+            }
+        )
+
+    return output_rows, row_payloads
+
+
+def run_pivot(
+    rule: dict,
+    sheet: dict,
+    source_rows: List[Dict[str, str]],
+    total_row_config: dict,
+) -> dict:
+    pivot_config = rule.get("pivot") or {}
+    sheet_group_field = as_text(pivot_config.get("sheetGroupField"))
+    row_group_fields = [as_text(field) for field in (pivot_config.get("rowGroupFields") or []) if as_text(field)]
+    if not sheet_group_field:
+        raise ValueError("透视输出缺少 Sheet 分组字段。")
+    if not row_group_fields:
+        raise ValueError("透视输出至少需要一个行分组字段。")
+
+    pivot_headers = resolve_pivot_headers(source_rows, pivot_config)
+    include_total_column = resolve_bool(pivot_config.get("includeTotalColumn"), True)
+    total_column_label = as_text(pivot_config.get("totalColumnLabel")) or "总计"
+    include_average_column = resolve_bool(pivot_config.get("includeAverageColumn"), True)
+    average_column_label = as_text(pivot_config.get("averageColumnLabel")) or "日均"
+    static_value_columns = [
+        as_text(item) for item in (pivot_config.get("staticValueColumns") or []) if as_text(item)
+    ]
+    output_headers = [*row_group_fields, *pivot_headers]
+    if include_total_column:
+        output_headers.append(total_column_label)
+    if include_average_column:
+        output_headers.append(average_column_label)
+    output_headers.extend(static_value_columns)
+
+    sheet_template = rule.get("sheetTemplate") or {}
+    title_enabled = bool(sheet_template.get("titleEnabled"))
+    title_template = as_text(sheet_template.get("titleTemplate"))
+    header_row_index = clamp_int(sheet_template.get("headerRowIndex"), 1, 1)
+    data_start_row_index = clamp_int(
+        sheet_template.get("dataStartRowIndex"),
+        header_row_index + 1,
+        header_row_index + 1,
+    )
+    if title_enabled:
+        header_row_index = max(2, header_row_index)
+        data_start_row_index = max(data_start_row_index, header_row_index + 1)
+    reserved_footer_rows = clamp_int(sheet_template.get("reservedFooterRows"), 0, 0)
+
+    variable_configs: Dict[str, dict] = {}
+    for config in sheet_template.get("variableConfigs", []):
+        variable_key = as_text(config.get("variableKey"))
+        if not variable_key:
+            continue
+        variable_configs[variable_key] = config
+
+    grouped_rows: "OrderedDict[str, List[Dict[str, str]]]" = OrderedDict()
+    for row in source_rows:
+        group_value = as_text(row.get(sheet_group_field)) or "未命名分组"
+        grouped_rows.setdefault(group_value, []).append(row)
+
+    sheets: List[dict] = []
+    used_sheet_names = set()
+    total_rows = 0
+    for sheet_group_name, rows_in_sheet in grouped_rows.items():
+        sheet_rows, row_payloads = build_pivot_sheet_rows(
+            rows_in_sheet,
+            row_group_fields,
+            pivot_headers,
+            pivot_config,
+        )
+        sheet_rows = append_total_row(output_headers, sheet_rows, total_row_config)
+        total_rows += len(sheet_rows)
+        title = render_title(title_template, row_payloads, variable_configs) if title_enabled else ""
+        sheet_name = unique_sheet_name(sanitize_sheet_name(sheet_group_name), used_sheet_names)
+        sheets.append(
+            {
+                "name": sheet_name,
+                "title": title,
+                "titleEnabled": title_enabled,
+                "groupHeaderEnabled": False,
+                "groupHeaderLabel": "",
+                "groupHeaderStartColumnIndex": 0,
+                "headerRowIndex": header_row_index,
+                "dataStartRowIndex": data_start_row_index,
+                "reservedFooterRows": reserved_footer_rows,
+                "headers": output_headers,
+                "rows": sheet_rows,
+            }
+        )
+
+    return {
+        "ok": True,
+        "sheetCount": len(sheets),
+        "rowCount": total_rows,
+        "sheets": sheets,
+    }
+
+
 def run(payload: dict) -> dict:
     rule = payload.get("rule") or {}
     sheet = payload.get("sheet") or {}
@@ -464,7 +760,7 @@ def run(payload: dict) -> dict:
         if not target_field:
             continue
         fill_field_rules[target_field] = field_rule
-    source_rows = sheet.get("rows") or []
+    source_rows = normalize_source_rows(sheet.get("rows") or [])
     source_headers = [as_text(header) for header in (sheet.get("headers") or []) if as_text(header)]
     mapping_groups = payload.get("mappingGroups") or []
     unmatched_fallback = as_text(payload.get("unmatchedFallback")) or "未知错误"
@@ -475,6 +771,9 @@ def run(payload: dict) -> dict:
     total_row_config = rule.get("totalRow")
     if not isinstance(total_row_config, dict):
         total_row_config = {}
+    source_filters = rule.get("sourceFilters") or []
+    source_rows = apply_source_filters(source_rows, source_filters)
+    dynamic_bucket_headers = resolve_dynamic_bucket_headers(output_columns, source_rows)
 
     if not output_columns:
         raise ValueError("规则未配置输出字段。")
@@ -496,8 +795,9 @@ def run(payload: dict) -> dict:
     group_header_label_text = as_text(rule.get("sourceGroupDisplayName")) or as_text(rule.get("sourceGroupName"))
     group_header_enabled = bool(dynamic_date_output_headers) and bool(group_header_label_text)
     group_header_label = group_header_label_text if group_header_enabled else ""
-    group_header_start_column_index = len(resolve_headers(output_columns)) if group_header_enabled else 0
-    output_headers = [*resolve_headers(output_columns), *dynamic_date_output_headers]
+    static_output_headers = resolve_headers(output_columns, dynamic_bucket_headers)
+    group_header_start_column_index = len(static_output_headers) if group_header_enabled else 0
+    output_headers = [*static_output_headers, *dynamic_date_output_headers]
     excluded_group_values = set()
     if group_exclude_mode == "manual_values":
         excluded_group_values = set(parse_exclude_values_text(group_exclude_values_text))
@@ -533,10 +833,7 @@ def run(payload: dict) -> dict:
                 if normalized:
                     default_candidate_fields.add(normalized)
 
-    for raw_row in source_rows:
-        if not isinstance(raw_row, dict):
-            continue
-        normalized_row = {str(key): as_text(value) for key, value in raw_row.items()}
+    for normalized_row in source_rows:
         if group_field:
             sheet_group_value = as_text(normalized_row.get(group_field))
             if sheet_group_value and sheet_group_value in excluded_group_values:
@@ -648,6 +945,7 @@ def run(payload: dict) -> dict:
                     rows_in_summary_group,
                     mapping_indexes,
                     unmatched_fallback,
+                    dynamic_bucket_headers,
                 )
                 dynamic_values, dynamic_output_by_field = evaluate_dynamic_date_output(
                     rows_in_summary_group,
@@ -663,7 +961,7 @@ def run(payload: dict) -> dict:
             else:
                 static_values, output_by_field, source_row = build_placeholder_output_row(
                     output_columns,
-                    resolve_headers(output_columns),
+                    resolve_headers(output_columns, dynamic_bucket_headers),
                     placeholder_summary_values,
                     mapping_indexes,
                     unmatched_fallback,
@@ -690,7 +988,7 @@ def run(payload: dict) -> dict:
             output_columns,
             row_is_filled,
         )
-        sheet_rows = append_total_row(sheet_headers, sheet_rows, total_row_config)
+        sheet_rows = append_total_row(sheet_headers, sheet_rows, total_row_config, dynamic_bucket_headers)
 
         total_rows += len(sheet_rows)
         sheet_name = unique_sheet_name(sanitize_sheet_name(sheet_group_name), used_sheet_names)

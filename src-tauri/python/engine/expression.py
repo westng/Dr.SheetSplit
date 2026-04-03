@@ -12,6 +12,35 @@ def to_number(value: Any, field_name: str) -> float:
     return parse_number(value, field_name)
 
 
+def is_expression_fallback_text(text: str, unmatched_fallback: str) -> bool:
+    normalized = as_text(text)
+    if not normalized:
+        return True
+
+    fallback_candidates = {
+        "-",
+        "未知错误",
+        "未知错误填充",
+        "Unknown Error",
+    }
+    normalized_unmatched_fallback = as_text(unmatched_fallback)
+    if normalized_unmatched_fallback:
+        fallback_candidates.add(normalized_unmatched_fallback)
+
+    return normalized in fallback_candidates
+
+
+def to_expression_number(value: Any, unmatched_fallback: str = "") -> float:
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = as_text(value)
+    if is_expression_fallback_text(text, unmatched_fallback):
+        return 0.0
+    return parse_number(text, "表达式")
+
+
 def expression_values(rows: List[Dict[str, str]], field_name: str) -> List[str]:
     normalized_field = as_text(field_name)
     if not normalized_field:
@@ -23,10 +52,13 @@ def evaluate_expression(
     expression_text: str,
     rows: List[Dict[str, str]],
     first_row: Dict[str, str],
+    output_by_field: Dict[str, str] | None = None,
+    unmatched_fallback: str = "",
 ) -> Any:
     normalized_expression = as_text(expression_text)
     if not normalized_expression:
         return ""
+    output_by_field = output_by_field or {}
 
     def fn_sum(field_name: str) -> float:
         values = expression_values(rows, field_name)
@@ -74,11 +106,18 @@ def evaluate_expression(
     def fn_count_non_empty(field_name: str) -> float:
         return fn_count(field_name)
 
+    def fn_output(field_name: str) -> str:
+        normalized_field = as_text(field_name)
+        if not normalized_field:
+            raise ValueError("output() 缺少字段名。")
+        return as_text(output_by_field.get(normalized_field))
+
     functions: Dict[str, Callable[..., Any]] = {
         "sum": fn_sum,
         "avg": fn_avg,
         "first": fn_first,
         "num": fn_num,
+        "output": fn_output,
         "join": fn_join,
         "join_unique": fn_join_unique,
         "count": fn_count,
@@ -97,24 +136,24 @@ def evaluate_expression(
             if isinstance(node.op, ast.Add):
                 if isinstance(left, str) or isinstance(right, str):
                     return f"{as_text(left)}{as_text(right)}"
-                return to_number(left, "表达式") + to_number(right, "表达式")
+                return to_expression_number(left, unmatched_fallback) + to_expression_number(right, unmatched_fallback)
             if isinstance(node.op, ast.Sub):
-                return to_number(left, "表达式") - to_number(right, "表达式")
+                return to_expression_number(left, unmatched_fallback) - to_expression_number(right, unmatched_fallback)
             if isinstance(node.op, ast.Mult):
-                return to_number(left, "表达式") * to_number(right, "表达式")
+                return to_expression_number(left, unmatched_fallback) * to_expression_number(right, unmatched_fallback)
             if isinstance(node.op, ast.Div):
-                divisor = to_number(right, "表达式")
+                divisor = to_expression_number(right, unmatched_fallback)
                 if abs(divisor) < 1e-9:
                     raise ValueError("表达式执行除法时分母为 0。")
-                return to_number(left, "表达式") / divisor
+                return to_expression_number(left, unmatched_fallback) / divisor
             raise ValueError("表达式仅支持 + - * / 运算。")
 
         if isinstance(node, ast.UnaryOp):
             operand = eval_node(node.operand)
             if isinstance(node.op, ast.USub):
-                return -to_number(operand, "表达式")
+                return -to_expression_number(operand, unmatched_fallback)
             if isinstance(node.op, ast.UAdd):
-                return to_number(operand, "表达式")
+                return to_expression_number(operand, unmatched_fallback)
             raise ValueError("表达式仅支持一元 + 或 -。")
 
         if isinstance(node, ast.Call):
@@ -150,4 +189,3 @@ def normalize_expression_result(value: Any) -> str:
     if isinstance(value, (int, float)):
         return format_number(float(value))
     return as_text(value)
-

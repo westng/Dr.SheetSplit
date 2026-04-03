@@ -3,8 +3,9 @@ from typing import Dict, List
 from .common import as_text
 
 
-def resolve_headers(output_columns: List[dict]) -> List[str]:
+def resolve_headers(output_columns: List[dict], dynamic_column_headers: Dict[str, List[str]] | None = None) -> List[str]:
     headers: List[str] = []
+    dynamic_column_headers = dynamic_column_headers or {}
     for index, column in enumerate(output_columns):
         mode = as_text(column.get("valueMode")) or "source"
         if mode == "conditional_target":
@@ -12,6 +13,11 @@ def resolve_headers(output_columns: List[dict]) -> List[str]:
             miss_field = as_text(column.get("conditionalMissTargetField")) or f"Column_{index + 1}_miss"
             headers.append(hit_field)
             headers.append(miss_field)
+            continue
+
+        if mode == "dynamic_bucket_sum":
+            target_field = as_text(column.get("targetField")) or f"Column_{index + 1}"
+            headers.extend(dynamic_column_headers.get(target_field, []))
             continue
 
         target_field = as_text(column.get("targetField"))

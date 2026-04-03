@@ -17,6 +17,8 @@ import {
   type RuleSheetTemplate,
   type RuleSheetTemplateVariableConfig,
   type RuleSheetTitleConflictMode,
+  type RuleSourceFilter,
+  type RuleSourceFilterOperator,
   type RuleTotalRowConfig,
   type RuleValueMode,
 } from "../types/rule";
@@ -104,6 +106,19 @@ function normalizeRule(value: unknown): RuleDefinition | null {
           aggregateDenominatorField: String(column.aggregateDenominatorField ?? "").trim(),
           aggregateJoinSourceField: String(column.aggregateJoinSourceField ?? "").trim(),
           aggregateJoinDelimiter: normalizeJoinDelimiter(column.aggregateJoinDelimiter),
+          bucketMatchField: String(column.bucketMatchField ?? "").trim(),
+          bucketValueField: String(column.bucketValueField ?? "").trim(),
+          bucketMatchValue: String(column.bucketMatchValue ?? "").trim(),
+          outputSourceFields: Array.isArray(column.outputSourceFields)
+            ? Array.from(
+                new Set(
+                  column.outputSourceFields
+                    .map((item) => String(item).trim())
+                    .filter(Boolean),
+                ),
+              )
+            : [],
+          dynamicReferenceTargetField: String(column.dynamicReferenceTargetField ?? "").trim(),
           copyFromTargetField: String(column.copyFromTargetField ?? "").trim(),
           dateSourceField: String(column.dateSourceField ?? "").trim(),
           dateOutputFormat: String(column.dateOutputFormat ?? "").trim() || "YYYY/M/D",
@@ -128,6 +143,11 @@ function normalizeRule(value: unknown): RuleDefinition | null {
     input.dynamicDateColumns,
     fallback.dynamicDateColumns,
   );
+  const sourceFilters = Array.isArray(input.sourceFilters)
+    ? input.sourceFilters
+        .map(normalizeSourceFilter)
+        .filter((item): item is RuleSourceFilter => item !== null)
+    : [...fallback.sourceFilters];
 
   return {
     id: input.id,
@@ -143,6 +163,7 @@ function normalizeRule(value: unknown): RuleDefinition | null {
     sourceGroupName: String(input.sourceGroupName ?? "").trim(),
     sourceGroupDisplayName: String(input.sourceGroupDisplayName ?? "").trim(),
     sourceHeaders: Array.isArray(input.sourceHeaders) ? input.sourceHeaders.map((item) => String(item)) : [],
+    sourceFilters,
     groupByEnabled: typeof input.groupByEnabled === "boolean" ? input.groupByEnabled : false,
     groupByFields: Array.isArray(input.groupByFields) ? input.groupByFields.map((item) => String(item)) : [],
     groupExcludeMode: normalizeGroupExcludeMode(input.groupExcludeMode),
@@ -211,6 +232,12 @@ function normalizeValueMode(value: unknown): RuleValueMode {
     value === "aggregate_sum" ||
     value === "aggregate_sum_divide" ||
     value === "aggregate_join" ||
+    value === "bucket_sum" ||
+    value === "dynamic_bucket_sum" ||
+    value === "output_sum" ||
+    value === "output_avg" ||
+    value === "dynamic_output_sum" ||
+    value === "dynamic_output_avg" ||
     value === "copy_output" ||
     value === "format_date" ||
     value === "expression"
@@ -266,6 +293,30 @@ function normalizeDynamicDateOutputMode(value: unknown): RuleDynamicDateOutputMo
     return value;
   }
   return "replace";
+}
+
+function normalizeSourceFilterOperator(value: unknown): RuleSourceFilterOperator {
+  if (value === "contains_any") {
+    return value;
+  }
+  return "contains_any";
+}
+
+function normalizeSourceFilter(value: unknown): RuleSourceFilter | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const input = value as Partial<RuleSourceFilter>;
+  const id = String(input.id ?? "").trim() || crypto.randomUUID();
+  return {
+    id,
+    field: String(input.field ?? "").trim(),
+    operator: normalizeSourceFilterOperator(input.operator),
+    keywords: Array.isArray(input.keywords)
+      ? Array.from(new Set(input.keywords.map((item) => String(item).trim()).filter(Boolean)))
+      : [],
+  };
 }
 
 function normalizeResultFillFieldRule(value: unknown): RuleResultFillFieldRule | null {

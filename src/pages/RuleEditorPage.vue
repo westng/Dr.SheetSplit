@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computed, onErrorCaptured, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import { useMappingStore, useRuleStore } from "../store";
+import { useImportSettings } from "../composables/useImportSettings";
 import {
   RULE_DYNAMIC_DATE_FACTOR_MODES,
   RULE_DYNAMIC_DATE_OUTPUT_MODES,
@@ -14,11 +15,13 @@ import {
   cloneRuleDefinition,
   createEmptyRuleDefinition,
   createEmptyRuleOutputColumn,
+  createEmptyRuleSourceFilter,
   createEmptyRuleResultFillFieldRule,
   createEmptyRuleSheetTemplate,
   type RuleDefinition,
   type RuleOutputColumn,
   type RuleResultFillFieldRule,
+  type RuleSourceFilter,
 } from "../types/rule";
 import {
   collectAvailableTemplateVariableKeys,
@@ -31,6 +34,8 @@ import {
   extractSheetGroupOptions,
   inferSheetHeaderLayout,
   parseSpreadsheetFile,
+  parseSpreadsheetPath,
+  readSpreadsheetSheetHeader,
   type SpreadsheetPreview,
   type SpreadsheetSheetData,
   type SpreadsheetSheetPreview,
@@ -47,6 +52,7 @@ const appWindow = getCurrentWindow();
 const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
+const { allowedImportFormats } = useImportSettings();
 const { ruleStoreError, saveRule, deleteRule, getRuleById, reloadRules } = useRuleStore();
 const { mappingGroups } = useMappingStore();
 
@@ -54,6 +60,7 @@ const activeRuleId = ref("");
 const sourceFileInputRef = ref<HTMLInputElement | null>(null);
 const draftRule = ref<RuleDefinition>(createEmptyRuleDefinition());
 const sourcePreview = ref<SpreadsheetPreview | null>(null);
+const activeSheetData = ref<SpreadsheetSheetData | null>(null);
 const validationErrors = ref<string[]>([]);
 const actionMessage = ref("");
 const isParsingSource = ref(false);
@@ -75,12 +82,7 @@ const mappingOptions = computed(() =>
     count: group.entries.length,
   })),
 );
-const rawActiveSheet = computed<SpreadsheetSheetData | null>(() => {
-  if (!sourcePreview.value) {
-    return null;
-  }
-  return sourcePreview.value.sheets.find((sheet) => sheet.name === draftRule.value.sourceSheetName) ?? null;
-});
+const rawActiveSheet = computed<SpreadsheetSheetData | null>(() => activeSheetData.value);
 const availableSourceGroups = computed(() => {
   if (!rawActiveSheet.value) {
     return [] as string[];
@@ -146,6 +148,9 @@ function getColumnTargetFields(column: RuleOutputColumn): string[] {
 const outputTemplateVariables = computed(() => {
   const variableKeys = new Set<string>();
   draftRule.value.outputColumns.forEach((column) => {
+    if (column.valueMode === "dynamic_bucket_sum") {
+      return;
+    }
     getColumnTargetFields(column).forEach((field) => {
       variableKeys.add(field);
     });
@@ -153,8 +158,17 @@ const outputTemplateVariables = computed(() => {
   return Array.from(variableKeys);
 });
 const outputTargetFields = computed(() => outputTemplateVariables.value.filter((item) => item.trim().length > 0));
+const dynamicBucketTargetFields = computed(() =>
+  draftRule.value.outputColumns
+    .filter((column) => column.valueMode === "dynamic_bucket_sum")
+    .map((column) => column.targetField.trim())
+    .filter(Boolean),
+);
 const resultFillTargetFields = computed(() => outputTargetFields.value);
-const totalRowTargetFields = computed(() => outputTargetFields.value);
+const totalRowLabelTargetFields = computed(() => outputTargetFields.value);
+const totalRowSumTargetFields = computed(() =>
+  Array.from(new Set([...outputTargetFields.value, ...dynamicBucketTargetFields.value])),
+);
 const availableTemplateVariables = computed(() =>
   collectAvailableTemplateVariableKeys(draftRule.value.sourceHeaders, draftRule.value.outputColumns),
 );
@@ -177,6 +191,11 @@ function resetFeedback(): void {
 
 function syncDraftWithHeaders(headers: string[]): void {
   const headerSet = new Set(headers);
+  draftRule.value.sourceFilters = draftRule.value.sourceFilters.map((filter) => ({
+    ...filter,
+    field: headerSet.has(filter.field) ? filter.field : "",
+    keywords: [...filter.keywords],
+  }));
   draftRule.value.groupByFields = draftRule.value.groupByFields.filter((field) => headerSet.has(field)).slice(0, 1);
   draftRule.value.summaryGroupByFields = draftRule.value.summaryGroupByFields.filter((field) => headerSet.has(field));
   if (!headerSet.has(draftRule.value.resultFill.baselineSourceField)) {
@@ -226,6 +245,12 @@ function syncDraftWithHeaders(headers: string[]): void {
     }
     if (column.aggregateJoinSourceField && !headerSet.has(column.aggregateJoinSourceField)) {
       patch.aggregateJoinSourceField = "";
+    }
+    if (column.bucketMatchField && !headerSet.has(column.bucketMatchField)) {
+      patch.bucketMatchField = "";
+    }
+    if (column.bucketValueField && !headerSet.has(column.bucketValueField)) {
+      patch.bucketValueField = "";
     }
     if (column.dateSourceField && !headerSet.has(column.dateSourceField)) {
       patch.dateSourceField = "";
@@ -286,6 +311,14 @@ function toggleMappingSourceField(column: RuleOutputColumn, header: string): voi
   column.mappingSourceFields = [...column.mappingSourceFields, header];
 }
 
+function toggleOutputSourceField(column: RuleOutputColumn, targetField: string): void {
+  if (column.outputSourceFields.includes(targetField)) {
+    column.outputSourceFields = column.outputSourceFields.filter((item) => item !== targetField);
+    return;
+  }
+  column.outputSourceFields = [...column.outputSourceFields, targetField];
+}
+
 function handleGroupExcludeModeChange(): void {
   if (draftRule.value.groupExcludeMode === "none") {
     draftRule.value.groupExcludeValuesText = "";
@@ -311,6 +344,29 @@ function clearGroupBySectionConfig(): void {
   draftRule.value.resultFill.enabled = false;
 }
 
+function addSourceFilter(): void {
+  draftRule.value.sourceFilters = [...draftRule.value.sourceFilters, createEmptyRuleSourceFilter()];
+}
+
+function removeSourceFilter(filterId: string): void {
+  draftRule.value.sourceFilters = draftRule.value.sourceFilters.filter((item) => item.id !== filterId);
+}
+
+function splitListValue(value: string): string[] {
+  return value
+    .split(/[\n\r,，]+/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function joinListValue(value: string[]): string {
+  return value.join(", ");
+}
+
+function updateSourceFilterKeywords(filter: RuleSourceFilter, rawValue: string): void {
+  filter.keywords = splitListValue(rawValue);
+}
+
 function syncResultFillFieldRules(): void {
   const fieldRuleMap = new Map(
     draftRule.value.resultFill.fieldRules.map((item) => [item.targetField.trim(), item] as const),
@@ -329,17 +385,37 @@ function syncResultFillFieldRules(): void {
 }
 
 function syncTotalRowConfig(): void {
-  const targetFieldSet = new Set(totalRowTargetFields.value);
-  if (!targetFieldSet.has(draftRule.value.totalRow.labelField)) {
+  const labelFieldSet = new Set(totalRowLabelTargetFields.value);
+  const sumFieldSet = new Set(totalRowSumTargetFields.value);
+  if (!labelFieldSet.has(draftRule.value.totalRow.labelField)) {
     draftRule.value.totalRow.labelField = "";
   }
   draftRule.value.totalRow.sumFields = Array.from(
     new Set(
       draftRule.value.totalRow.sumFields
         .map((field) => field.trim())
-        .filter((field) => targetFieldSet.has(field)),
+        .filter((field) => sumFieldSet.has(field)),
     ),
   );
+}
+
+function syncOutputColumnDependencies(): void {
+  const targetFieldSet = new Set(outputTemplateVariables.value);
+  const dynamicTargetFieldSet = new Set(dynamicBucketTargetFields.value);
+  draftRule.value.outputColumns = draftRule.value.outputColumns.map((column) => ({
+    ...column,
+    outputSourceFields: column.outputSourceFields.filter(
+      (field) => targetFieldSet.has(field) && !getColumnTargetFields(column).includes(field),
+    ),
+    dynamicReferenceTargetField:
+      column.dynamicReferenceTargetField && dynamicTargetFieldSet.has(column.dynamicReferenceTargetField)
+        ? column.dynamicReferenceTargetField
+        : "",
+    copyFromTargetField:
+      column.copyFromTargetField && targetFieldSet.has(column.copyFromTargetField)
+        ? column.copyFromTargetField
+        : "",
+  }));
 }
 
 function handleTotalRowEnabledChange(event: Event): void {
@@ -351,8 +427,8 @@ function handleTotalRowEnabledChange(event: Event): void {
   if (!draftRule.value.totalRow.label.trim()) {
     draftRule.value.totalRow.label = "总计";
   }
-  if (!draftRule.value.totalRow.labelField && totalRowTargetFields.value.length > 0) {
-    draftRule.value.totalRow.labelField = totalRowTargetFields.value[0] || "";
+  if (!draftRule.value.totalRow.labelField && totalRowLabelTargetFields.value.length > 0) {
+    draftRule.value.totalRow.labelField = totalRowLabelTargetFields.value[0] || "";
   }
 }
 
@@ -507,11 +583,28 @@ async function loadRule(ruleId: string | null): Promise<void> {
   }
 }
 
-function openSourceFilePicker(): void {
-  sourceFileInputRef.value?.click();
+async function openSourceFilePicker(): Promise<void> {
+  if (isParsingSource.value) {
+    return;
+  }
+
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        name: "Spreadsheet",
+        extensions: allowedImportFormats.value,
+      },
+    ],
+  });
+  if (!selected || Array.isArray(selected)) {
+    return;
+  }
+
+  await processSourcePath(selected);
 }
 
-function applySheet(sheetName: string): void {
+async function applySheet(sheetName: string): Promise<void> {
   if (!sourcePreview.value) {
     return;
   }
@@ -519,7 +612,9 @@ function applySheet(sheetName: string): void {
   if (!sheet) {
     return;
   }
-  const inferredLayout = inferSheetHeaderLayout(sheet);
+  const sheetHeader = await readSpreadsheetSheetHeader(sourcePreview.value.datasetId, sheetName);
+  activeSheetData.value = sheetHeader;
+  const inferredLayout = inferSheetHeaderLayout(sheetHeader);
   draftRule.value.sourceSheetName = sheet.name;
   draftRule.value.sourceHeaderRowIndex = inferredLayout.headerRowIndex;
   draftRule.value.sourceGroupHeaderRowIndex = inferredLayout.groupHeaderRowIndex;
@@ -572,12 +667,18 @@ async function handleSourceFileChange(event: Event): Promise<void> {
     return;
   }
 
+  await processSourceFile(file);
+  input.value = "";
+}
+
+async function processSourceFile(file: File): Promise<void> {
   isParsingSource.value = true;
   resetFeedback();
 
   try {
     const preview = await parseSpreadsheetFile(file);
     sourcePreview.value = preview;
+    activeSheetData.value = null;
     draftRule.value.sourceFileName = preview.fileName;
 
     if (preview.sheets.length === 0) {
@@ -587,11 +688,12 @@ async function handleSourceFileChange(event: Event): Promise<void> {
       return;
     }
 
-    applySheet(preview.sheets[0].name);
+    await applySheet(preview.sheets[0].name);
     actionMessage.value = t("rules.messages.sourceLoaded", { file: preview.fileName });
   } catch (error) {
     console.error("Failed to parse source file in rule editor.", error);
     sourcePreview.value = null;
+    activeSheetData.value = null;
     draftRule.value.sourceFileName = "";
     draftRule.value.sourceSheetName = "";
     draftRule.value.sourceHeaders = [];
@@ -600,7 +702,40 @@ async function handleSourceFileChange(event: Event): Promise<void> {
     ];
   } finally {
     isParsingSource.value = false;
-    input.value = "";
+  }
+}
+
+async function processSourcePath(filePath: string): Promise<void> {
+  isParsingSource.value = true;
+  resetFeedback();
+
+  try {
+    const preview = await parseSpreadsheetPath(filePath);
+    sourcePreview.value = preview;
+    activeSheetData.value = null;
+    draftRule.value.sourceFileName = preview.fileName;
+
+    if (preview.sheets.length === 0) {
+      draftRule.value.sourceSheetName = "";
+      draftRule.value.sourceHeaders = [];
+      validationErrors.value = [t("rules.messages.noSheetFound")];
+      return;
+    }
+
+    await applySheet(preview.sheets[0].name);
+    actionMessage.value = t("rules.messages.sourceLoaded", { file: preview.fileName });
+  } catch (error) {
+    console.error("Failed to parse source file path in rule editor.", error);
+    sourcePreview.value = null;
+    activeSheetData.value = null;
+    draftRule.value.sourceFileName = "";
+    draftRule.value.sourceSheetName = "";
+    draftRule.value.sourceHeaders = [];
+    validationErrors.value = [
+      `${t("rules.messages.sourceLoadFailed")} ${asErrorMessage(error)}`.trim(),
+    ];
+  } finally {
+    isParsingSource.value = false;
   }
 }
 
@@ -621,6 +756,11 @@ function handleColumnModeChange(column: RuleOutputColumn): void {
   column.aggregateDenominatorField = "";
   column.aggregateJoinSourceField = "";
   column.aggregateJoinDelimiter = "newline";
+  column.bucketMatchField = "";
+  column.bucketValueField = "";
+  column.bucketMatchValue = "";
+  column.outputSourceFields = [];
+  column.dynamicReferenceTargetField = "";
   column.copyFromTargetField = "";
   column.dateSourceField = "";
   column.dateOutputFormat = "YYYY/M/D";
@@ -709,6 +849,7 @@ watch(
 watch(
   () => resultFillTargetFields.value.join("|"),
   () => {
+    syncOutputColumnDependencies();
     syncResultFillFieldRules();
     syncTotalRowConfig();
   },
@@ -968,6 +1109,54 @@ onUnmounted(() => {
             {{ $t("rules.messages.sampleRows", { count: activeSheetPreview.rowCount }) }}
           </p>
           </div>
+        </div>
+      </section>
+
+      <section class="editor-section">
+        <h3 class="editor-section-title">{{ $t("rules.editor.sourceFilterTitle") }}</h3>
+        <div class="editor-group">
+          <div class="stack-actions">
+            <button type="button" class="secondary-btn" :disabled="!canEdit" @click="addSourceFilter">
+              {{ $t("rules.actions.addFilter") }}
+            </button>
+          </div>
+          <table v-if="draftRule.sourceFilters.length > 0" class="rule-table compact-table">
+            <thead>
+              <tr>
+                <th>{{ $t("rules.fields.sourceFilterField") }}</th>
+                <th>{{ $t("rules.fields.sourceFilterKeywords") }}</th>
+                <th class="operation-col">{{ $t("rules.fields.operation") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="filter in draftRule.sourceFilters" :key="filter.id">
+                <td>
+                  <select v-model="filter.field" :disabled="!canEdit">
+                    <option value="">{{ $t("rules.messages.selectHeader") }}</option>
+                    <option v-for="header in availableHeaders" :key="`source-filter-${filter.id}-${header}`" :value="header">
+                      {{ header }}
+                    </option>
+                  </select>
+                </td>
+                <td>
+                  <textarea
+                    :value="joinListValue(filter.keywords)"
+                    rows="2"
+                    :disabled="!canEdit"
+                    :placeholder="$t('rules.messages.sourceFilterKeywordsPlaceholder')"
+                    @input="updateSourceFilterKeywords(filter, ($event.target as HTMLTextAreaElement).value)"
+                  />
+                </td>
+                <td>
+                  <button type="button" class="danger-btn" :disabled="!canEdit" @click="removeSourceFilter(filter.id)">
+                    {{ $t("rules.actions.removeField") }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="hint-text">{{ $t("rules.messages.sourceFiltersEmpty") }}</p>
+          <p class="hint-text">{{ $t("rules.messages.sourceFilterHint") }}</p>
         </div>
       </section>
 
@@ -1305,6 +1494,12 @@ onUnmounted(() => {
                   <option value="aggregate_sum">{{ $t("rules.modes.aggregate_sum") }}</option>
                   <option value="aggregate_sum_divide">{{ $t("rules.modes.aggregate_sum_divide") }}</option>
                   <option value="aggregate_join">{{ $t("rules.modes.aggregate_join") }}</option>
+                  <option value="bucket_sum">{{ $t("rules.modes.bucket_sum") }}</option>
+                  <option value="dynamic_bucket_sum">{{ $t("rules.modes.dynamic_bucket_sum") }}</option>
+                  <option value="output_sum">{{ $t("rules.modes.output_sum") }}</option>
+                  <option value="output_avg">{{ $t("rules.modes.output_avg") }}</option>
+                  <option value="dynamic_output_sum">{{ $t("rules.modes.dynamic_output_sum") }}</option>
+                  <option value="dynamic_output_avg">{{ $t("rules.modes.dynamic_output_avg") }}</option>
                   <option value="copy_output">{{ $t("rules.modes.copy_output") }}</option>
                   <option value="format_date">{{ $t("rules.modes.format_date") }}</option>
                   <option value="expression">{{ $t("rules.modes.expression") }}</option>
@@ -1423,6 +1618,96 @@ onUnmounted(() => {
                       <option value="newline">{{ $t("rules.messages.aggregateJoinDelimiter.newline") }}</option>
                       <option value="space">{{ $t("rules.messages.aggregateJoinDelimiter.space") }}</option>
                     </select>
+                  </div>
+                </template>
+                <template v-else-if="column.valueMode === 'bucket_sum'">
+                  <div class="mapping-config">
+                    <select v-model="column.bucketMatchField" :disabled="!canEdit">
+                      <option value="">{{ $t("rules.messages.bucketSelectMatchField") }}</option>
+                      <option v-for="header in availableHeaders" :key="`bucket-match-${column.id}-${header}`" :value="header">{{ header }}</option>
+                    </select>
+                    <select v-model="column.bucketValueField" :disabled="!canEdit">
+                      <option value="">{{ $t("rules.messages.bucketSelectValueField") }}</option>
+                      <option v-for="header in availableHeaders" :key="`bucket-value-${column.id}-${header}`" :value="header">{{ header }}</option>
+                    </select>
+                    <input
+                      v-model="column.bucketMatchValue"
+                      type="text"
+                      :disabled="!canEdit"
+                      :placeholder="$t('rules.messages.bucketMatchValuePlaceholder')"
+                    />
+                    <p class="hint-text">{{ $t("rules.messages.bucketSumHint") }}</p>
+                  </div>
+                </template>
+                <template v-else-if="column.valueMode === 'dynamic_bucket_sum'">
+                  <div class="mapping-config">
+                    <select v-model="column.bucketMatchField" :disabled="!canEdit">
+                      <option value="">{{ $t("rules.messages.dynamicBucketSelectColumnField") }}</option>
+                      <option v-for="header in availableHeaders" :key="`dynamic-bucket-column-${column.id}-${header}`" :value="header">{{ header }}</option>
+                    </select>
+                    <select v-model="column.bucketValueField" :disabled="!canEdit">
+                      <option value="">{{ $t("rules.messages.dynamicBucketSelectValueField") }}</option>
+                      <option v-for="header in availableHeaders" :key="`dynamic-bucket-value-${column.id}-${header}`" :value="header">{{ header }}</option>
+                    </select>
+                    <p class="hint-text">{{ $t("rules.messages.dynamicBucketHint") }}</p>
+                  </div>
+                </template>
+                <template v-else-if="column.valueMode === 'output_sum' || column.valueMode === 'output_avg'">
+                  <div class="mapping-config">
+                    <div class="group-options mapping-multi-options">
+                      <label
+                        v-for="target in outputTemplateVariables.filter((item) => !getColumnTargetFields(column).includes(item))"
+                        :key="`${column.id}-output-source-${target}`"
+                        class="group-option"
+                      >
+                        <input
+                          type="checkbox"
+                          :checked="column.outputSourceFields.includes(target)"
+                          :disabled="!canEdit"
+                          @change="toggleOutputSourceField(column, target)"
+                        />
+                        <button
+                          type="button"
+                          class="group-option-btn"
+                          :class="{ active: column.outputSourceFields.includes(target) }"
+                          :disabled="!canEdit"
+                          @click.prevent="toggleOutputSourceField(column, target)"
+                        />
+                        <span :title="target">{{ target }}</span>
+                      </label>
+                    </div>
+                    <div class="selected-fields">
+                      <span
+                        v-for="field in column.outputSourceFields"
+                        :key="`${column.id}-output-selected-${field}`"
+                        class="selected-field-chip"
+                      >
+                        {{ field }}
+                      </span>
+                      <p v-if="column.outputSourceFields.length === 0" class="hint-text">
+                        {{ $t("rules.messages.outputSourceFieldsHint") }}
+                      </p>
+                    </div>
+                    <p class="hint-text">
+                      {{ column.valueMode === 'output_avg' ? $t("rules.messages.outputAvgHint") : $t("rules.messages.outputSumHint") }}
+                    </p>
+                  </div>
+                </template>
+                <template v-else-if="column.valueMode === 'dynamic_output_sum' || column.valueMode === 'dynamic_output_avg'">
+                  <div class="mapping-config">
+                    <select v-model="column.dynamicReferenceTargetField" :disabled="!canEdit">
+                      <option value="">{{ $t("rules.messages.dynamicOutputSelectSource") }}</option>
+                      <option
+                        v-for="target in dynamicBucketTargetFields.filter((item) => item !== column.targetField)"
+                        :key="`${column.id}-dynamic-source-${target}`"
+                        :value="target"
+                      >
+                        {{ target }}
+                      </option>
+                    </select>
+                    <p class="hint-text">
+                      {{ column.valueMode === 'dynamic_output_avg' ? $t("rules.messages.dynamicOutputAvgHint") : $t("rules.messages.dynamicOutputSumHint") }}
+                    </p>
                   </div>
                 </template>
                 <template v-else-if="column.valueMode === 'copy_output'">
@@ -1758,10 +2043,10 @@ onUnmounted(() => {
             <div class="editor-setting-row">
               <span class="editor-setting-label">{{ $t("rules.fields.totalRowLabelField") }}</span>
               <label class="field-block">
-                <select v-model="draftRule.totalRow.labelField" :disabled="!canEdit || totalRowTargetFields.length === 0">
+                <select v-model="draftRule.totalRow.labelField" :disabled="!canEdit || totalRowLabelTargetFields.length === 0">
                   <option value="">{{ $t("rules.messages.totalRowLabelFieldFirstColumn") }}</option>
                   <option
-                    v-for="targetField in totalRowTargetFields"
+                    v-for="targetField in totalRowLabelTargetFields"
                     :key="`total-row-label-${targetField}`"
                     :value="targetField"
                   >
@@ -1774,7 +2059,7 @@ onUnmounted(() => {
             <div class="group-sub-block">
               <h4 class="sub-group-title">{{ $t("rules.fields.totalRowSumFields") }}</h4>
               <div class="group-options group-sub-content">
-                <label v-for="targetField in totalRowTargetFields" :key="`total-row-sum-${targetField}`" class="group-option">
+                <label v-for="targetField in totalRowSumTargetFields" :key="`total-row-sum-${targetField}`" class="group-option">
                   <input
                     type="checkbox"
                     :checked="draftRule.totalRow.sumFields.includes(targetField)"
@@ -1799,7 +2084,7 @@ onUnmounted(() => {
                 >
                   {{ targetField }}
                 </span>
-                <p v-if="totalRowTargetFields.length === 0" class="hint-text">
+                <p v-if="totalRowSumTargetFields.length === 0" class="hint-text">
                   {{ $t("rules.messages.totalRowNoFields") }}
                 </p>
                 <p v-else-if="draftRule.totalRow.sumFields.length === 0" class="hint-text">
@@ -2037,6 +2322,24 @@ onUnmounted(() => {
 .field-block textarea {
   resize: vertical;
   min-height: 96px;
+}
+
+.stack-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.compact-table th,
+.compact-table td {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.inline-switch-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
 }
 
 .source-actions {

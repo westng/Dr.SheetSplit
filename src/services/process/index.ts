@@ -7,11 +7,15 @@ export async function runProcessTask(
   input: ProcessTaskInput,
   options: ProcessTaskOptions = {},
 ): Promise<ProcessTaskResult> {
-  options.onStage?.("invoke_engine");
+  const useDatasetPipeline = Boolean(input.datasetId && input.sourceSheetName);
+  if (!useDatasetPipeline) {
+    options.onStage?.("prepare_data");
+    options.onStage?.("invoke_engine");
+  }
   const engineOutput = await runPythonTransform(input);
 
   options.onStage?.("build_workbook");
-  const workbookBinary = buildWorkbookBinary(engineOutput);
+  const workbookBinary = await buildWorkbookBinary(engineOutput);
 
   options.onStage?.("resolve_output_path");
   const outputPath = await resolveOutputPath(

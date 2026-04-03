@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "mapping-editor", "rule-editor"],
+  "windows": ["main", "mapping-editor", "rule-editor", "engine-rule-editor"],
   "permissions": [
     "core:default",
     "core:window:allow-create",

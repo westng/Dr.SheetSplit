@@ -101,9 +101,23 @@ function getUnknownErrorMessage(error: unknown): string {
 export async function runPythonTransform(input: ProcessTaskInput): Promise<EngineOutput> {
   let rawResult = "";
   try {
-    rawResult = await invoke<string>("run_python_transform", {
-      payload: JSON.stringify(input),
-    });
+    if (input.datasetId && input.sourceSheetName) {
+      rawResult = await invoke<string>("run_python_transform_for_dataset", {
+        payload: JSON.stringify({
+          rule: input.rule,
+          mappingGroups: input.mappingGroups,
+          sourceFileName: input.sourceFileName,
+          exportDirectory: input.exportDirectory,
+          unmatchedFallback: input.unmatchedFallback,
+        }),
+        datasetId: input.datasetId,
+        sheetName: input.sourceSheetName,
+      });
+    } else {
+      rawResult = await invoke<string>("run_python_transform", {
+        payload: JSON.stringify(input),
+      });
+    }
   } catch (error) {
     throw new Error(`调用 Python 转换引擎失败：${getUnknownErrorMessage(error)}`);
   }

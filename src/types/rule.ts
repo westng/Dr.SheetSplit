@@ -7,6 +7,12 @@ export type RuleValueMode =
   | "aggregate_sum"
   | "aggregate_sum_divide"
   | "aggregate_join"
+  | "bucket_sum"
+  | "dynamic_bucket_sum"
+  | "output_sum"
+  | "output_avg"
+  | "dynamic_output_sum"
+  | "dynamic_output_avg"
   | "copy_output"
   | "format_date"
   | "expression";
@@ -17,6 +23,7 @@ export type RuleGroupExcludeMode = "none" | "manual_values" | "mapping_group_sou
 export type RuleResultFillFallbackMode = "unknown" | "empty" | "error";
 export type RuleDynamicDateFactorMode = "fixed" | "mapping";
 export type RuleDynamicDateOutputMode = "replace" | "append_suffix";
+export type RuleSourceFilterOperator = "contains_any";
 export type RuleResultFillValueMode =
   | "inherit"
   | "empty"
@@ -24,6 +31,13 @@ export type RuleResultFillValueMode =
   | "mapping"
   | "mapping_multi"
   | "copy_output";
+
+export type RuleSourceFilter = {
+  id: string;
+  field: string;
+  operator: RuleSourceFilterOperator;
+  keywords: string[];
+};
 
 export type RuleOutputColumn = {
   id: string;
@@ -44,6 +58,11 @@ export type RuleOutputColumn = {
   aggregateDenominatorField: string;
   aggregateJoinSourceField: string;
   aggregateJoinDelimiter: RuleJoinDelimiter;
+  bucketMatchField: string;
+  bucketValueField: string;
+  bucketMatchValue: string;
+  outputSourceFields: string[];
+  dynamicReferenceTargetField: string;
   copyFromTargetField: string;
   dateSourceField: string;
   dateOutputFormat: string;
@@ -111,6 +130,7 @@ export type RuleDefinition = {
   sourceGroupName: string;
   sourceGroupDisplayName: string;
   sourceHeaders: string[];
+  sourceFilters: RuleSourceFilter[];
   groupByEnabled: boolean;
   groupByFields: string[];
   groupExcludeMode: RuleGroupExcludeMode;
@@ -139,6 +159,12 @@ export const RULE_VALUE_MODES: RuleValueMode[] = [
   "aggregate_sum",
   "aggregate_sum_divide",
   "aggregate_join",
+  "bucket_sum",
+  "dynamic_bucket_sum",
+  "output_sum",
+  "output_avg",
+  "dynamic_output_sum",
+  "dynamic_output_avg",
   "copy_output",
   "format_date",
   "expression",
@@ -163,6 +189,16 @@ export const RULE_DYNAMIC_DATE_OUTPUT_MODES: RuleDynamicDateOutputMode[] = [
   "replace",
   "append_suffix",
 ];
+export const RULE_SOURCE_FILTER_OPERATORS: RuleSourceFilterOperator[] = ["contains_any"];
+
+export function createEmptyRuleSourceFilter(): RuleSourceFilter {
+  return {
+    id: crypto.randomUUID(),
+    field: "",
+    operator: "contains_any",
+    keywords: [],
+  };
+}
 
 export function createEmptyRuleOutputColumn(): RuleOutputColumn {
   return {
@@ -184,6 +220,11 @@ export function createEmptyRuleOutputColumn(): RuleOutputColumn {
     aggregateDenominatorField: "",
     aggregateJoinSourceField: "",
     aggregateJoinDelimiter: "newline",
+    bucketMatchField: "",
+    bucketValueField: "",
+    bucketMatchValue: "",
+    outputSourceFields: [],
+    dynamicReferenceTargetField: "",
     copyFromTargetField: "",
     dateSourceField: "",
     dateOutputFormat: "YYYY/M/D",
@@ -268,6 +309,7 @@ export function createEmptyRuleDefinition(): RuleDefinition {
     sourceGroupName: "",
     sourceGroupDisplayName: "",
     sourceHeaders: [],
+    sourceFilters: [],
     groupByEnabled: false,
     groupByFields: [],
     groupExcludeMode: "none",
@@ -293,6 +335,10 @@ export function cloneRuleDefinition(rule: RuleDefinition): RuleDefinition {
     sourceGroupName: rule.sourceGroupName,
     sourceGroupDisplayName: rule.sourceGroupDisplayName,
     sourceHeaders: [...rule.sourceHeaders],
+    sourceFilters: rule.sourceFilters.map((filter) => ({
+      ...filter,
+      keywords: [...filter.keywords],
+    })),
     groupByFields: [...rule.groupByFields],
     groupExcludeMode: rule.groupExcludeMode,
     groupExcludeValuesText: rule.groupExcludeValuesText,
@@ -316,6 +362,7 @@ export function cloneRuleDefinition(rule: RuleDefinition): RuleDefinition {
     outputColumns: rule.outputColumns.map((column) => ({
       ...column,
       mappingSourceFields: [...column.mappingSourceFields],
+      outputSourceFields: [...column.outputSourceFields],
     })),
     sheetTemplate: {
       ...rule.sheetTemplate,

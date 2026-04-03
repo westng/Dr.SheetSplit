@@ -1,24 +1,38 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { runProcessTask } from "../../services/process";
 import type { ProcessTaskStage } from "../../services/process/types";
 import type { CreateTaskHistoryInput, TaskHistoryLogItem } from "../../types/history";
 import { useHistoryStore, useMappingStore, useRuleStore } from "../../store";
 import { useImportSettings } from "../../composables/useImportSettings";
-import { buildSheetPreview, parseSpreadsheetFile, type SpreadsheetPreview, type SpreadsheetSheetData, type SpreadsheetSheetPreview } from "../../utils/spreadsheetParser";
+import { basenameFromPath } from "../../utils/nativeFile";
+import {
+  buildSheetPreview,
+  parseSpreadsheetFile,
+  parseSpreadsheetPath,
+  readSpreadsheetSheetHeader,
+  type SpreadsheetPreview,
+  type SpreadsheetSheetData,
+  type SpreadsheetSheetPreview,
+} from "../../utils/spreadsheetParser";
 import { validateRuleCompatibility } from "../../utils/ruleValidator";
 
 const { t } = useI18n();
 const { rules, isRuleStoreReady } = useRuleStore();
 const { mappingGroups } = useMappingStore();
 const { recordTask } = useHistoryStore();
-const { allowedImportAccept, allowedImportDisplay, isAllowedImportFile } = useImportSettings();
+const { allowedImportFormats, allowedImportAccept, allowedImportDisplay, isAllowedImportFile } = useImportSettings();
+const PROCESS_LOG_EVENT = "process-log";
 
 const sourceFileInputRef = ref<HTMLInputElement | null>(null);
+const processLogListRef = ref<HTMLUListElement | null>(null);
 const selectedRuleId = ref("");
 const sourcePreview = ref<SpreadsheetPreview | null>(null);
 const selectedSheetName = ref("");
+const selectedSheetData = ref<SpreadsheetSheetData | null>(null);
 const sourceFileName = ref("");
 const isParsingSource = ref(false);
 const isDragOver = ref(false);
@@ -26,14 +40,18 @@ const loadError = ref("");
 const runMessage = ref("");
 const isProcessing = ref(false);
 const processLogs = ref<TaskHistoryLogItem[]>([]);
+const isCheckingCompatibility = ref(false);
+const compatibilityResult = ref<{
+  isCompatible: boolean;
+  errors: string[];
+}>({
+  isCompatible: false,
+  errors: [],
+});
+let unlistenProcessLog: UnlistenFn | undefined;
+const compatibilityCache = new Map<string, { isCompatible: boolean; errors: string[] }>();
 
 const selectedRule = computed(() => rules.value.find((item) => item.id === selectedRuleId.value) ?? null);
-const selectedSheetData = computed<SpreadsheetSheetData | null>(() => {
-  if (!sourcePreview.value) {
-    return null;
-  }
-  return sourcePreview.value.sheets.find((sheet) => sheet.name === selectedSheetName.value) ?? null;
-});
 const selectedSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
   if (!selectedSheetData.value) {
     return null;
@@ -44,21 +62,19 @@ const selectedSheetPreview = computed<SpreadsheetSheetPreview | null>(() => {
     groupName: selectedRule.value?.sourceGroupName ?? "",
   });
 });
-const compatibilityResult = computed(() => {
-  if (!selectedRule.value || !selectedSheetPreview.value) {
-    return {
-      isCompatible: false,
-      errors: [] as string[],
-    };
-  }
-
-  return validateRuleCompatibility(selectedRule.value, selectedSheetPreview.value.headers, mappingGroups.value);
-});
+const selectedRuleSignature = computed(() => (selectedRule.value ? JSON.stringify(selectedRule.value) : ""));
+const sheetHeaderSignature = computed(() => selectedSheetPreview.value?.headers.join("\u0001") ?? "");
+const mappingSignature = computed(() =>
+  mappingGroups.value
+    .map((group) => `${group.id}:${group.entries.length}`)
+    .join("|"),
+);
 const canStart = computed(
   () =>
     Boolean(selectedRule.value) &&
     Boolean(selectedSheetPreview.value) &&
     compatibilityResult.value.isCompatible &&
+    !isCheckingCompatibility.value &&
     !isParsingSource.value &&
     !isProcessing.value,
 );
@@ -75,6 +91,9 @@ const dynamicSheetPreview = computed(() => {
   const excludeSet = resolveGroupExcludeSet(selectedRule.value);
   const preview = new Set<string>();
   for (const row of selectedSheetPreview.value.sampleRows) {
+    if (!matchesSourceFilters(selectedRule.value, row)) {
+      continue;
+    }
     const groupField = selectedRule.value.groupByFields[0];
     const groupValue = String(row[groupField] ?? "").trim();
     if (groupValue && excludeSet.has(groupValue)) {
@@ -94,6 +113,27 @@ const dynamicSheetPreview = computed(() => {
   }
   return Array.from(preview);
 });
+
+function matchesSourceFilters(
+  rule: NonNullable<typeof selectedRule.value>,
+  row: Record<string, string>,
+): boolean {
+  if (rule.sourceFilters.length === 0) {
+    return true;
+  }
+
+  return rule.sourceFilters.every((filter) => {
+    const field = filter.field.trim();
+    if (!field) {
+      return true;
+    }
+    const value = String(row[field] ?? "").trim();
+    if (filter.operator === "contains_any") {
+      return filter.keywords.some((keyword) => keyword && value.includes(keyword));
+    }
+    return true;
+  });
+}
 
 function splitExcludeText(value: string): string[] {
   return value
@@ -135,16 +175,44 @@ function appendProcessLog(message: string, level: "info" | "success" | "error" =
     return;
   }
 
+  const latest = processLogs.value[processLogs.value.length - 1];
+  if (latest && latest.message === normalized && latest.level === level) {
+    return;
+  }
+
   processLogs.value.push({
     id: crypto.randomUUID(),
     level,
     time: formatLogTime(),
     message: normalized,
   });
+
+  void nextTick(() => {
+    const element = processLogListRef.value;
+    if (!element) {
+      return;
+    }
+    element.scrollTop = 0;
+  });
 }
 
 function clearProcessLogs(): void {
   processLogs.value = [];
+}
+
+function resetCompatibilityResult(): void {
+  compatibilityResult.value = {
+    isCompatible: false,
+    errors: [],
+  };
+}
+
+function buildCompatibilityCacheKey(): string {
+  return [
+    selectedRuleSignature.value,
+    sheetHeaderSignature.value,
+    mappingSignature.value,
+  ].join("::");
 }
 
 function snapshotProcessLogs(): TaskHistoryLogItem[] {
@@ -164,8 +232,25 @@ function resolveStageMessage(stage: ProcessTaskStage): string {
   return t(`workspace.messages.logStage.${stage}`);
 }
 
-function openSourceFilePicker(): void {
-  sourceFileInputRef.value?.click();
+async function openSourceFilePicker(): Promise<void> {
+  if (isParsingSource.value) {
+    return;
+  }
+
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        name: "Spreadsheet",
+        extensions: allowedImportFormats.value,
+      },
+    ],
+  });
+  if (!selected || Array.isArray(selected)) {
+    return;
+  }
+
+  await processSourcePath(selected);
 }
 
 function handleDropzoneKeydown(event: KeyboardEvent): void {
@@ -221,6 +306,7 @@ async function processSourceFile(file: File): Promise<void> {
   try {
     const parsed = await parseSpreadsheetFile(file);
     sourcePreview.value = parsed;
+    selectedSheetData.value = null;
     sourceFileName.value = parsed.fileName;
     selectedSheetName.value = resolveInitialSheetName(parsed);
 
@@ -240,8 +326,60 @@ async function processSourceFile(file: File): Promise<void> {
   } catch (error) {
     console.error("Failed to parse source file in workspace.", error);
     sourcePreview.value = null;
+    selectedSheetData.value = null;
     selectedSheetName.value = "";
     sourceFileName.value = "";
+    loadError.value = `${t("workspace.messages.loadFailed")} ${toErrorMessage(error)}`.trim();
+    appendProcessLog(loadError.value, "error");
+  } finally {
+    isParsingSource.value = false;
+  }
+}
+
+async function processSourcePath(filePath: string): Promise<void> {
+  const normalizedPath = filePath.trim();
+  if (!normalizedPath) {
+    return;
+  }
+
+  if (!isAllowedImportFile(normalizedPath)) {
+    loadError.value = t("workspace.messages.invalidFormat", {
+      formats: allowedImportDisplay.value,
+    });
+    appendProcessLog(loadError.value, "error");
+    return;
+  }
+
+  isParsingSource.value = true;
+  runMessage.value = "";
+  loadError.value = "";
+
+  try {
+    const parsed = await parseSpreadsheetPath(normalizedPath);
+    sourcePreview.value = parsed;
+    selectedSheetData.value = null;
+    sourceFileName.value = parsed.fileName || basenameFromPath(normalizedPath);
+    selectedSheetName.value = resolveInitialSheetName(parsed);
+
+    if (parsed.sheets.length === 0) {
+      loadError.value = t("workspace.messages.noSheetFound");
+      appendProcessLog(loadError.value, "error");
+    } else {
+      appendProcessLog(
+        t("workspace.messages.logSourceLoaded", {
+          file: sourceFileName.value,
+          sheet: selectedSheetName.value,
+          count: parsed.sheets.length,
+        }),
+        "info",
+      );
+    }
+  } catch (error) {
+    console.error("Failed to parse source file from path in workspace.", error);
+    sourcePreview.value = null;
+    selectedSheetData.value = null;
+    selectedSheetName.value = "";
+    sourceFileName.value = basenameFromPath(normalizedPath);
     loadError.value = `${t("workspace.messages.loadFailed")} ${toErrorMessage(error)}`.trim();
     appendProcessLog(loadError.value, "error");
   } finally {
@@ -283,6 +421,12 @@ async function handleDrop(event: DragEvent): Promise<void> {
 
   const file = event.dataTransfer?.files?.[0];
   if (!file) {
+    return;
+  }
+
+  const filePath = String((file as File & { path?: string }).path ?? "").trim();
+  if (filePath) {
+    await processSourcePath(filePath);
     return;
   }
 
@@ -334,7 +478,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 async function handleStartProcess(): Promise<void> {
-  if (!canStart.value || !selectedRule.value || !selectedSheetPreview.value) {
+  if (!canStart.value || !selectedRule.value || !selectedSheetPreview.value || !sourcePreview.value) {
     return;
   }
 
@@ -358,11 +502,8 @@ async function handleStartProcess(): Promise<void> {
     const result = await runProcessTask({
       rule: selectedRule.value,
       mappingGroups: [...mappingGroups.value],
-      sheet: {
-        name: historySourceSheetName,
-        headers: [...selectedSheetPreview.value.headers],
-        rows: selectedSheetPreview.value.rows.map((row) => ({ ...row })),
-      },
+      datasetId: sourcePreview.value.datasetId,
+      sourceSheetName: historySourceSheetName,
       sourceFileName: historySourceFileName,
       exportDirectory: resolveExportDirectory(),
       unmatchedFallback: "未知错误",
@@ -431,42 +572,105 @@ function preventWindowFileDrop(event: DragEvent): void {
   event.preventDefault();
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener("dragover", preventWindowFileDrop);
   window.addEventListener("drop", preventWindowFileDrop);
+  unlistenProcessLog = await listen<{ message?: string }>(PROCESS_LOG_EVENT, (event) => {
+    if (!isProcessing.value) {
+      return;
+    }
+    const message = String(event.payload?.message ?? "").trim();
+    if (!message) {
+      return;
+    }
+    appendProcessLog(message);
+  });
 });
 
 onUnmounted(() => {
   window.removeEventListener("dragover", preventWindowFileDrop);
   window.removeEventListener("drop", preventWindowFileDrop);
+  unlistenProcessLog?.();
 });
+
+watch(
+  [() => sourcePreview.value?.datasetId ?? "", selectedSheetName, selectedRuleId],
+  async ([datasetId, sheetName, ruleId], _previous, onCleanup) => {
+    if (!datasetId || !sheetName || !ruleId) {
+      selectedSheetData.value = null;
+      return;
+    }
+
+    let cancelled = false;
+    onCleanup(() => {
+      cancelled = true;
+    });
+
+    try {
+      const sheetData = await readSpreadsheetSheetHeader(datasetId, sheetName);
+      if (!cancelled) {
+        selectedSheetData.value = sheetData;
+      }
+    } catch (error) {
+      if (!cancelled) {
+        selectedSheetData.value = null;
+        loadError.value = `${t("workspace.messages.loadFailed")} ${toErrorMessage(error)}`.trim();
+        appendProcessLog(loadError.value, "error");
+      }
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  [selectedRuleSignature, sheetHeaderSignature, mappingSignature],
+  ([ruleSignature, headerSignature], _previous, onCleanup) => {
+    if (!ruleSignature || !headerSignature || !selectedRule.value || !selectedSheetPreview.value) {
+      isCheckingCompatibility.value = false;
+      resetCompatibilityResult();
+      return;
+    }
+
+    const cacheKey = buildCompatibilityCacheKey();
+    const cached = compatibilityCache.get(cacheKey);
+    if (cached) {
+      isCheckingCompatibility.value = false;
+      compatibilityResult.value = cached;
+      return;
+    }
+
+    isCheckingCompatibility.value = true;
+    const timeoutId = window.setTimeout(() => {
+      const nextResult = validateRuleCompatibility(
+        selectedRule.value!,
+        selectedSheetPreview.value!.headers,
+        mappingGroups.value,
+      );
+      compatibilityCache.set(cacheKey, nextResult);
+      compatibilityResult.value = nextResult;
+      isCheckingCompatibility.value = false;
+    }, 80);
+
+    onCleanup(() => {
+      window.clearTimeout(timeoutId);
+    });
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
   <section class="workspace">
     <article class="surface surface-upload">
-      <input ref="sourceFileInputRef" type="file" :accept="allowedImportAccept" class="hidden-file" @change="handleSourceFileChange" />
-      <div
-        class="dropzone"
-        :class="{ 'is-dragover': isDragOver }"
-        :aria-disabled="isParsingSource"
-        role="button"
-        tabindex="0"
-        @click="openSourceFilePicker"
-        @keydown="handleDropzoneKeydown"
-        @dragenter="handleDragEnter"
-        @dragover="handleDragOver"
-        @dragleave="handleDragLeave"
-        @drop="handleDrop"
-      >
+      <input ref="sourceFileInputRef" type="file" :accept="allowedImportAccept" class="hidden-file"
+        @change="handleSourceFileChange" />
+      <div class="dropzone" :class="{ 'is-dragover': isDragOver }" :aria-disabled="isParsingSource" role="button"
+        tabindex="0" @click="openSourceFilePicker" @keydown="handleDropzoneKeydown" @dragenter="handleDragEnter"
+        @dragover="handleDragOver" @dragleave="handleDragLeave" @drop="handleDrop">
         <span class="dropzone-title">{{ $t("workspace.importFile") }}</span>
-        <span class="dropzone-description">{{ $t("workspace.messages.dropHint", { formats: allowedImportDisplay }) }}</span>
-        <button
-          type="button"
-          class="dropzone-action"
-          :disabled="isParsingSource"
-          @click.stop="openSourceFilePicker"
-        >
+        <span class="dropzone-description">{{ $t("workspace.messages.dropHint", { formats: allowedImportDisplay })
+          }}</span>
+        <button type="button" class="dropzone-action" :disabled="isParsingSource" @click.stop="openSourceFilePicker">
           {{ isParsingSource ? $t("workspace.messages.parsing") : $t("workspace.chooseExcel") }}
         </button>
       </div>
@@ -508,7 +712,8 @@ onUnmounted(() => {
         <div class="inline-field-control">
           <select v-model="selectedRuleId" :disabled="!isRuleStoreReady">
             <option value="">{{ $t("workspace.messages.selectRule") }}</option>
-            <option v-for="rule in rules" :key="rule.id" :value="rule.id">{{ rule.name || $t("rules.library.unnamed") }}</option>
+            <option v-for="rule in rules" :key="rule.id" :value="rule.id">{{ rule.name || $t("rules.library.unnamed") }}
+            </option>
           </select>
         </div>
       </div>
@@ -531,6 +736,9 @@ onUnmounted(() => {
       </div>
 
       <p v-if="loadError" class="error">{{ loadError }}</p>
+      <p v-else-if="isCheckingCompatibility" class="hint">
+        {{ $t("workspace.messages.validationChecking") }}
+      </p>
       <ul v-else-if="compatibilityResult.errors.length > 0" class="error-list">
         <li v-for="error in compatibilityResult.errors" :key="error">{{ error }}</li>
       </ul>
@@ -542,16 +750,11 @@ onUnmounted(() => {
 
     <article class="surface log-zone">
       <h3>{{ $t("workspace.processingLog") }}</h3>
-      <ul class="log-list">
+      <ul ref="processLogListRef" class="log-list">
         <li v-if="displayProcessLogs.length === 0" class="log-empty">
           {{ $t("workspace.messages.logEmpty") }}
         </li>
-        <li
-          v-for="log in displayProcessLogs"
-          :key="log.id"
-          class="log-item"
-          :class="`log-${log.level}`"
-        >
+        <li v-for="log in displayProcessLogs" :key="log.id" class="log-item" :class="`log-${log.level}`">
           <span class="log-time">{{ log.time }}</span>
           <span class="log-message">{{ log.message }}</span>
         </li>
@@ -625,7 +828,7 @@ onUnmounted(() => {
 }
 
 .inline-field-control select {
-  width: 100%;
+  /* width: 100%; */
 }
 
 .dropzone {
@@ -785,6 +988,8 @@ button:disabled {
 }
 
 .primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
   filter: brightness(1.08);
 }
 
@@ -843,7 +1048,7 @@ li {
   height: 0;
 }
 
-.log-list > li {
+.log-list>li {
   border: none;
   border-radius: 0;
   background: transparent;

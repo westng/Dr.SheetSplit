@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-export type MainMenu = "process" | "rules" | "mapping" | "settings";
+export type MainMenu = "process" | "engineProcess" | "rules" | "engineRules" | "mapping" | "settings";
 
 const activeHistoryId = ref("");
 const activeMenu = ref<MainMenu>("process");
