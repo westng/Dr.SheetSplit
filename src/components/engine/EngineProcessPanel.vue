@@ -2,7 +2,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import EngineRuleLibrary from "./EngineRuleLibrary.vue";
 import { useEngineRuleStore, useMappingStore, useUiStore } from "../../store";
 import type { EngineRuleDefinition, EngineRuleOutputField, EngineRuleSource } from "../../types/engineRule";
 import { validateEngineRuleDraft } from "../../utils/engineRuleValidator";
@@ -46,6 +45,7 @@ const validationState = ref<ValidationState>({
   passed: false,
   errors: [],
 });
+const expandedSources = ref<Record<string, boolean>>({});
 const isProcessing = ref(false);
 const processLogs = ref<TaskHistoryLogItem[]>([]);
 const runError = ref("");
@@ -150,6 +150,17 @@ function getRuntimeSourceState(source: EngineRuleSource): RuntimeSourceState {
   return ensureRuntimeSourceState(source);
 }
 
+function isSourceExpanded(sourceId: string): boolean {
+  return Boolean(expandedSources.value[sourceId]);
+}
+
+function toggleSourceExpanded(sourceId: string): void {
+  expandedSources.value = {
+    ...expandedSources.value,
+    [sourceId]: !expandedSources.value[sourceId],
+  };
+}
+
 function sourceLabel(index: number): string {
   return t("engineProcess.sourceLabel", { index: index + 1 });
 }
@@ -167,6 +178,12 @@ function resolveOutputLabel(field: EngineRuleOutputField, index: number): string
 
 function resolveSourceHeaders(sourceId: string): string[] {
   return runtimeSources.value[sourceId]?.sheetPreview?.headers ?? [];
+}
+
+function resolveStableOutputFieldNames(rule: EngineRuleDefinition): string[] {
+  return rule.outputFields
+    .filter((field) => field.nameMode === "fixed" && field.fieldName.trim())
+    .map((field) => field.fieldName.trim());
 }
 
 function hasSourceField(sourceId: string, field: string): boolean {
@@ -191,11 +208,12 @@ function pushMissingFieldError(
   sourceId: string,
   fieldName: string,
   contextLabel: string,
+  extraFieldNames: readonly string[] = [],
 ): void {
   if (!fieldName.trim()) {
     return;
   }
-  if (hasSourceField(sourceId, fieldName)) {
+  if (hasSourceField(sourceId, fieldName) || extraFieldNames.includes(fieldName.trim())) {
     return;
   }
   errors.push(
@@ -210,6 +228,8 @@ function pushMissingFieldError(
 function validateRuntime(rule: EngineRuleDefinition): string[] {
   const errors = [...validateEngineRuleDraft(rule).errors];
   const groupFieldLabels = rule.result.groupFields.map((field) => field.label.trim()).filter(Boolean);
+  const stableOutputFieldNames = resolveStableOutputFieldNames(rule);
+  const sharedResolvableFieldNames = Array.from(new Set([...groupFieldLabels, ...stableOutputFieldNames]));
 
   rule.sources.forEach((source, index) => {
     const state = runtimeSources.value[source.id];
@@ -274,7 +294,15 @@ function validateRuntime(rule: EngineRuleDefinition): string[] {
 
   rule.outputFields.forEach((field, index) => {
     const outputLabel = resolveOutputLabel(field, index);
-    if (field.sourceTableId && field.sourceField) {
+    const usesPrimarySourceField =
+      field.valueMode !== "expression" &&
+      field.valueMode !== "constant" &&
+      field.valueMode !== "mapping" &&
+      field.valueMode !== "fill" &&
+      field.valueMode !== "dynamic_columns" &&
+      field.valueMode !== "dynamic_group_sum" &&
+      field.valueMode !== "dynamic_group_avg";
+    if (usesPrimarySourceField && field.sourceTableId && field.sourceField) {
       pushMissingFieldError(errors, rule, field.sourceTableId, field.sourceField, outputLabel);
     }
 
@@ -283,7 +311,14 @@ function validateRuntime(rule: EngineRuleDefinition): string[] {
     }
 
     field.mappingSourceFields.forEach((name) => {
-      pushMissingFieldError(errors, rule, field.sourceTableId, name, `${outputLabel} / ${t("engineRules.fields.mappingSourceFields")}`);
+      pushMissingFieldError(
+        errors,
+        rule,
+        field.sourceTableId,
+        name,
+        `${outputLabel} / ${t("engineRules.fields.mappingSourceFields")}`,
+        sharedResolvableFieldNames,
+      );
     });
     field.nameMappingSourceFields.forEach((name) => {
       pushMissingFieldError(errors, rule, field.nameSourceTableId, name, `${outputLabel} / ${t("engineRules.fields.nameMappingSourceFields")}`);
@@ -312,6 +347,22 @@ function validateRuntime(rule: EngineRuleDefinition): string[] {
     if (field.valueMode === "dynamic_columns" && field.dynamicColumnConfig.enabled) {
       pushMissingFieldError(errors, rule, field.sourceTableId, field.dynamicColumnConfig.columnField, `${outputLabel} / ${t("engineRules.fields.dynamicColumnField")}`);
       pushMissingFieldError(errors, rule, field.sourceTableId, field.dynamicColumnConfig.valueField, `${outputLabel} / ${t("engineRules.fields.dynamicValueField")}`);
+    }
+
+    if (field.valueMode === "dynamic_group_sum" || field.valueMode === "dynamic_group_avg") {
+      const dynamicFieldExists = rule.outputFields.some(
+        (candidate) =>
+          candidate.id === field.dynamicGroupAggregateConfig.sourceFieldId &&
+          candidate.valueMode === "dynamic_columns" &&
+          candidate.dynamicColumnConfig.enabled,
+      );
+      if (field.dynamicGroupAggregateConfig.sourceFieldId.trim() && !dynamicFieldExists) {
+        errors.push(
+          t("engineProcess.messages.missingDynamicAggregateSource", {
+            output: outputLabel,
+          }),
+        );
+      }
     }
 
     if (field.valueMode === "text_aggregate" && field.textAggregateConfig.sortField) {
@@ -522,6 +573,7 @@ watch(
       });
     }
     runtimeSources.value = nextStates;
+    expandedSources.value = {};
     validationState.value = {
       ran: false,
       passed: false,
@@ -537,76 +589,141 @@ void reloadEngineRules();
 
 <template>
   <div class="engine-process-page">
-    <section class="engine-process-hero">
-      <div class="hero-copy">
-        <p class="hero-eyebrow">{{ $t("sidebar.engineProcess.title") }}</p>
-        <h3>{{ $t("engineProcess.title") }}</h3>
-        <p class="hero-description">{{ $t("engineProcess.subtitle") }}</p>
+    <section class="engine-process-toolbar">
+      <div class="toolbar-copy">
+        <p class="toolbar-eyebrow">{{ $t("sidebar.engineProcess.title") }}</p>
+        <div class="toolbar-headline">
+          <h3>{{ $t("engineProcess.title") }}</h3>
+          <span v-if="selectedRule" class="toolbar-badge">
+            {{ selectedRule.name || $t("engineRules.library.unnamed") }}
+          </span>
+        </div>
+        <p class="toolbar-description">{{ $t("engineProcess.subtitle") }}</p>
       </div>
-      <div class="hero-actions">
+      <div class="toolbar-actions">
         <button type="button" class="secondary-btn" @click="goToRuleEngine">
           {{ $t("engineProcess.actions.openRuleEngine") }}
-        </button>
-        <button type="button" class="primary-btn" :disabled="!selectedRule" @click="runValidation">
-          {{ $t("engineProcess.actions.validateRule") }}
-        </button>
-        <button type="button" class="primary-btn accent-btn" :disabled="!canStart" @click="handleStartProcess">
-          {{ isProcessing ? $t("engineProcess.actions.processing") : $t("engineProcess.actions.startProcess") }}
         </button>
       </div>
     </section>
 
     <div class="engine-process-layout">
-      <aside class="panel rule-panel">
+      <section class="panel rule-panel">
         <div class="panel-header">
-          <h4>{{ $t("engineProcess.ruleListTitle") }}</h4>
+          <div>
+            <h4>{{ $t("engineProcess.ruleListTitle") }}</h4>
+            <p class="panel-subtitle">{{ $t("engineProcess.executionHint") }}</p>
+          </div>
           <span class="panel-count">{{ availableRules.length }}</span>
         </div>
         <p v-if="availableRules.length === 0" class="empty-copy">
           {{ $t("engineProcess.noRules") }}
         </p>
-        <EngineRuleLibrary
-          v-else
-          :rules="availableRules"
-          :active-rule-id="selectedRuleId"
-          :disabled="false"
-          :show-title="false"
-          @select="selectedRuleId = $event"
-        />
-      </aside>
+        <label v-else class="rule-select-field">
+          <span>{{ $t("engineProcess.ruleListTitle") }}</span>
+          <select v-model="selectedRuleId">
+            <option v-for="rule in availableRules" :key="rule.id" :value="rule.id">
+              {{ rule.name || $t("engineRules.library.unnamed") }}
+            </option>
+          </select>
+        </label>
+      </section>
 
-      <section class="panel workbench-panel">
-        <template v-if="selectedRule">
-          <div class="panel-header panel-header-wide">
-            <div>
-              <h4>{{ selectedRule.name || $t("engineRules.library.unnamed") }}</h4>
-              <p class="panel-subtitle">{{ selectedRule.description || $t("engineProcess.ruleSummaryEmpty") }}</p>
-            </div>
-            <div class="summary-badges">
-              <span class="summary-badge">{{ $t(`engineRules.ruleTypes.${selectedRule.ruleType}`) }}</span>
-              <span class="summary-badge">{{ $t("engineProcess.sourceCount", { count: selectedRule.sources.length }) }}</span>
-              <span class="summary-badge" :class="overallReady ? 'ready' : 'pending'">
-                {{ overallReady ? $t("engineProcess.ready") : $t("engineProcess.pending") }}
-              </span>
-            </div>
-          </div>
-
-          <div class="content-stack">
-            <section class="sub-panel">
-              <div class="sub-panel-header">
-                <h5>{{ $t("engineProcess.sourcesTitle") }}</h5>
-                <span class="sub-panel-meta">{{ sourceReadyCount }}/{{ selectedRule.sources.length }}</span>
+      <template v-if="selectedRule">
+        <section class="process-flow-stack">
+          <section class="panel summary-panel">
+            <div class="panel-header panel-header-wide">
+              <div>
+                <h4>{{ selectedRule.name || $t("engineRules.library.unnamed") }}</h4>
+                <p class="panel-subtitle">{{ selectedRule.description || $t("engineProcess.ruleSummaryEmpty") }}</p>
               </div>
+              <div class="summary-badges">
+                <span class="summary-badge">{{ $t(`engineRules.ruleTypes.${selectedRule.ruleType}`) }}</span>
+                <span class="summary-badge">{{ $t("engineProcess.sourceCount", { count: selectedRule.sources.length }) }}</span>
+                <span class="summary-badge" :class="overallReady ? 'ready' : 'pending'">
+                  {{ overallReady ? $t("engineProcess.ready") : $t("engineProcess.pending") }}
+                </span>
+              </div>
+            </div>
 
-              <div class="source-list">
-                <article v-for="(source, index) in selectedRule.sources" :key="source.id" class="source-card">
-                  <div class="source-card-top">
-                    <div class="source-main">
+            <div class="summary-strip">
+              <article class="summary-stat">
+                <span class="summary-stat-label">{{ $t("engineProcess.sourcesTitle") }}</span>
+                <strong>{{ sourceReadyCount }}/{{ selectedRule.sources.length }}</strong>
+              </article>
+              <article class="summary-stat">
+                <span class="summary-stat-label">{{ $t("engineProcess.validationTitle") }}</span>
+                <strong>
+                  {{
+                    !validationState.ran
+                      ? $t("engineProcess.validationIdle")
+                      : validationState.passed
+                        ? $t("engineProcess.validationPassed")
+                        : $t("engineProcess.validationFailed")
+                  }}
+                </strong>
+              </article>
+              <article class="summary-stat">
+                <span class="summary-stat-label">{{ $t("engineProcess.processTitle") }}</span>
+                <strong>
+                  {{
+                    isProcessing
+                      ? $t("engineProcess.actions.processing")
+                      : runSummary
+                        ? $t("engineProcess.processSuccessTitle")
+                        : runError
+                          ? $t("engineProcess.processFailedTitle")
+                          : $t("engineProcess.processIdleTitle")
+                  }}
+                </strong>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel sources-panel">
+            <div class="panel-header">
+              <div>
+                <h4>{{ $t("engineProcess.sourcesTitle") }}</h4>
+                <p class="panel-subtitle">{{ $t("engineProcess.executionHint") }}</p>
+              </div>
+              <span class="panel-count">{{ sourceReadyCount }}/{{ selectedRule.sources.length }}</span>
+            </div>
+
+            <div class="source-list">
+              <article v-for="(source, index) in selectedRule.sources" :key="source.id" class="source-card">
+                <div class="source-card-top">
+                  <div class="source-main">
+                    <div class="source-title-row">
                       <strong>{{ sourceLabel(index) }}</strong>
-                      <span class="source-meta">
-                        {{ source.sourceFileName || $t("engineProcess.messages.noFileTemplate") }}
+                      <span
+                        class="source-state-badge"
+                        :class="{
+                          loading: getRuntimeSourceState(source).loading,
+                          ready: !!getRuntimeSourceState(source).sheetPreview && !getRuntimeSourceState(source).error,
+                          error: !!getRuntimeSourceState(source).error,
+                        }"
+                      >
+                        {{
+                          getRuntimeSourceState(source).loading
+                            ? $t("engineRules.messages.uploading")
+                            : getRuntimeSourceState(source).error
+                              ? $t("engineProcess.processFailedTitle")
+                              : getRuntimeSourceState(source).sheetPreview
+                                ? $t("engineProcess.ready")
+                                : $t("engineProcess.pending")
+                        }}
                       </span>
                     </div>
+                    <div class="source-compact-meta">
+                      <span class="source-inline-item">
+                        {{ getRuntimeSourceState(source).fileName || source.sourceFileName || $t("engineProcess.messages.noFileTemplate") }}
+                      </span>
+                      <span class="source-inline-item">
+                        {{ getRuntimeSourceState(source).sheetName || source.sourceSheetName || $t("engineRules.messages.selectSheet") }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="source-actions">
                     <button
                       type="button"
                       class="secondary-btn"
@@ -615,8 +732,13 @@ void reloadEngineRules();
                     >
                       {{ getRuntimeSourceState(source).loading ? $t("engineRules.messages.uploading") : $t("engineProcess.actions.uploadSource") }}
                     </button>
+                    <button type="button" class="text-btn" @click="toggleSourceExpanded(source.id)">
+                      {{ isSourceExpanded(source.id) ? $t("mapping.actions.collapse") : $t("mapping.actions.expand") }}
+                    </button>
                   </div>
+                </div>
 
+                <div v-if="isSourceExpanded(source.id)" class="source-card-details">
                   <div class="source-grid">
                     <label class="field-block">
                       <span>{{ $t("engineProcess.sourceFile") }}</span>
@@ -659,116 +781,118 @@ void reloadEngineRules();
                     {{ $t("engineProcess.detectedHeaders", { count: getRuntimeSourceState(source).sheetPreview?.headers.length ?? 0 }) }}
                   </p>
 
-                  <div v-if="getRuntimeSourceState(source).sheetPreview?.headers?.length" class="header-chip-list">
-                    <span
-                      v-for="header in getRuntimeSourceState(source).sheetPreview?.headers ?? []"
-                      :key="`${source.id}-${header}`"
-                      class="header-chip"
-                    >
-                      {{ header }}
-                    </span>
-                  </div>
-                </article>
+                  <details v-if="getRuntimeSourceState(source).sheetPreview?.headers?.length" class="header-disclosure">
+                    <summary class="header-disclosure-summary">
+                      <span>{{ $t("engineProcess.detectedHeaders", { count: getRuntimeSourceState(source).sheetPreview?.headers.length ?? 0 }) }}</span>
+                      <span class="header-disclosure-hint">{{ getRuntimeSourceState(source).sheetName || source.sourceSheetName }}</span>
+                    </summary>
+                    <div class="header-chip-list">
+                      <span
+                        v-for="header in getRuntimeSourceState(source).sheetPreview?.headers ?? []"
+                        :key="`${source.id}-${header}`"
+                        class="header-chip"
+                      >
+                        {{ header }}
+                      </span>
+                    </div>
+                  </details>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel side-panel">
+            <div class="sub-panel-header">
+              <h5>{{ $t("engineProcess.validationTitle") }}</h5>
+              <button type="button" class="secondary-btn" :disabled="!selectedRule" @click="runValidation">
+                {{ $t("engineProcess.actions.validateRule") }}
+              </button>
+            </div>
+
+            <p class="panel-subtitle">{{ $t("engineProcess.validationHint") }}</p>
+
+            <div
+              class="validation-result"
+              :class="validationState.ran ? (validationState.passed ? 'passed' : 'failed') : 'idle'"
+            >
+              <strong>
+                {{
+                  !validationState.ran
+                    ? $t("engineProcess.validationIdle")
+                    : validationState.passed
+                      ? $t("engineProcess.validationPassed")
+                      : $t("engineProcess.validationFailed")
+                }}
+              </strong>
+              <span>
+                {{
+                  validationState.ran
+                    ? validationState.passed
+                      ? $t("engineProcess.validationPassedHint")
+                      : $t("engineProcess.validationFailedHint", { count: validationState.errors.length })
+                    : $t("engineProcess.validationIdleHint")
+                }}
+              </span>
+            </div>
+
+            <ul v-if="validationState.ran && validationState.errors.length > 0" class="error-list">
+              <li v-for="error in validationState.errors" :key="error">
+                {{ error }}
+              </li>
+            </ul>
+          </section>
+
+          <section class="panel side-panel">
+            <div class="sub-panel-header">
+              <h5>{{ $t("engineProcess.processTitle") }}</h5>
+              <button type="button" class="primary-btn accent-btn" :disabled="!canStart" @click="handleStartProcess">
+                {{ isProcessing ? $t("engineProcess.actions.processing") : $t("engineProcess.actions.startProcess") }}
+              </button>
+            </div>
+
+            <p class="panel-subtitle">{{ $t("engineProcess.processHint") }}</p>
+
+            <div v-if="runSummary" class="validation-result passed">
+              <strong>{{ $t("engineProcess.processSuccessTitle") }}</strong>
+              <span>
+                {{ $t("engineProcess.processSuccessHint", { sheets: runSummary.sheetCount, rows: runSummary.rowCount }) }}
+              </span>
+              <span class="path-text">{{ runSummary.outputPath }}</span>
+            </div>
+
+            <div v-else-if="runError" class="validation-result failed">
+              <strong>{{ $t("engineProcess.processFailedTitle") }}</strong>
+              <span>{{ runError }}</span>
+            </div>
+
+            <div v-else class="validation-result idle">
+              <strong>{{ $t("engineProcess.processIdleTitle") }}</strong>
+              <span>{{ $t("engineProcess.processIdleHint") }}</span>
+            </div>
+
+            <div class="log-board">
+              <div class="log-board-header">
+                <strong>{{ $t("engineProcess.logsTitle") }}</strong>
+                <span>{{ processLogs.length }}</span>
               </div>
-            </section>
-
-            <section class="sub-panel">
-              <div class="sub-panel-header">
-                <h5>{{ $t("engineProcess.validationTitle") }}</h5>
-                <button type="button" class="secondary-btn" :disabled="!selectedRule" @click="runValidation">
-                  {{ $t("engineProcess.actions.validateRule") }}
-                </button>
-              </div>
-
-              <p class="panel-subtitle">{{ $t("engineProcess.validationHint") }}</p>
-
-              <div
-                class="validation-result"
-                :class="validationState.ran ? (validationState.passed ? 'passed' : 'failed') : 'idle'"
-              >
-                <strong>
-                  {{
-                    !validationState.ran
-                      ? $t("engineProcess.validationIdle")
-                      : validationState.passed
-                        ? $t("engineProcess.validationPassed")
-                        : $t("engineProcess.validationFailed")
-                  }}
-                </strong>
-                <span>
-                  {{
-                    validationState.ran
-                      ? validationState.passed
-                        ? $t("engineProcess.validationPassedHint")
-                        : $t("engineProcess.validationFailedHint", { count: validationState.errors.length })
-                      : $t("engineProcess.validationIdleHint")
-                  }}
-                </span>
-              </div>
-
-              <ul v-if="validationState.ran && validationState.errors.length > 0" class="error-list">
-                <li v-for="error in validationState.errors" :key="error">
-                  {{ error }}
+              <ul v-if="displayProcessLogs.length > 0" class="log-list">
+                <li v-for="logItem in displayProcessLogs" :key="logItem.id" class="log-item">
+                  <span class="log-time">{{ logItem.time }}</span>
+                  <span class="log-message" :class="logItem.level">{{ logItem.message }}</span>
                 </li>
               </ul>
+              <p v-else class="empty-copy">{{ $t("engineProcess.logsEmpty") }}</p>
+            </div>
+          </section>
+        </section>
+      </template>
 
-              <p class="pending-note">
-                {{ $t("engineProcess.executionHint") }}
-              </p>
-            </section>
-
-            <section class="sub-panel">
-              <div class="sub-panel-header">
-                <h5>{{ $t("engineProcess.processTitle") }}</h5>
-                <button type="button" class="primary-btn accent-btn" :disabled="!canStart" @click="handleStartProcess">
-                  {{ isProcessing ? $t("engineProcess.actions.processing") : $t("engineProcess.actions.startProcess") }}
-                </button>
-              </div>
-
-              <p class="panel-subtitle">{{ $t("engineProcess.processHint") }}</p>
-
-              <div v-if="runSummary" class="validation-result passed">
-                <strong>{{ $t("engineProcess.processSuccessTitle") }}</strong>
-                <span>
-                  {{ $t("engineProcess.processSuccessHint", { sheets: runSummary.sheetCount, rows: runSummary.rowCount }) }}
-                </span>
-                <span class="path-text">{{ runSummary.outputPath }}</span>
-              </div>
-
-              <div v-else-if="runError" class="validation-result failed">
-                <strong>{{ $t("engineProcess.processFailedTitle") }}</strong>
-                <span>{{ runError }}</span>
-              </div>
-
-              <div v-else class="validation-result idle">
-                <strong>{{ $t("engineProcess.processIdleTitle") }}</strong>
-                <span>{{ $t("engineProcess.processIdleHint") }}</span>
-              </div>
-
-              <div class="log-board">
-                <div class="log-board-header">
-                  <strong>{{ $t("engineProcess.logsTitle") }}</strong>
-                  <span>{{ processLogs.length }}</span>
-                </div>
-                <ul v-if="displayProcessLogs.length > 0" class="log-list">
-                  <li v-for="logItem in displayProcessLogs" :key="logItem.id" class="log-item">
-                    <span class="log-time">{{ logItem.time }}</span>
-                    <span class="log-message" :class="logItem.level">{{ logItem.message }}</span>
-                  </li>
-                </ul>
-                <p v-else class="empty-copy">{{ $t("engineProcess.logsEmpty") }}</p>
-              </div>
-            </section>
-          </div>
-        </template>
-
-        <div v-else class="empty-state">
-          <h4>{{ $t("engineProcess.noRules") }}</h4>
-          <p>{{ $t("engineProcess.noRulesHint") }}</p>
-          <button type="button" class="primary-btn" @click="goToRuleEngine">
-            {{ $t("engineProcess.actions.openRuleEngine") }}
-          </button>
-        </div>
+      <section v-else class="panel empty-state">
+        <h4>{{ $t("engineProcess.noRules") }}</h4>
+        <p>{{ $t("engineProcess.noRulesHint") }}</p>
+        <button type="button" class="primary-btn" @click="goToRuleEngine">
+          {{ $t("engineProcess.actions.openRuleEngine") }}
+        </button>
       </section>
     </div>
   </div>
@@ -781,41 +905,42 @@ void reloadEngineRules();
   gap: 16px;
 }
 
-.engine-process-hero,
+.engine-process-toolbar,
 .panel,
-.sub-panel,
 .source-card,
 .validation-result,
 .header-chip,
 .summary-badge,
+.summary-stat,
+.toolbar-badge,
+.source-state-badge,
 .empty-state {
   border: 1px solid var(--stroke-soft);
   background: var(--bg-card);
   border-radius: 18px;
 }
 
-.engine-process-hero,
+.engine-process-toolbar,
 .panel,
-.sub-panel,
 .source-card,
 .empty-state {
   box-shadow: var(--shadow-soft);
 }
 
-.engine-process-hero {
+.engine-process-toolbar {
   padding: 18px 20px;
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 18px;
 }
 
-.hero-copy {
+.toolbar-copy {
   display: grid;
   gap: 6px;
 }
 
-.hero-eyebrow {
+.toolbar-eyebrow {
   margin: 0;
   font-size: var(--fs-caption);
   letter-spacing: 0.08em;
@@ -823,19 +948,32 @@ void reloadEngineRules();
   color: var(--accent);
 }
 
-.hero-copy h3 {
+.toolbar-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.toolbar-copy h3 {
   margin: 0;
-  font-size: 24px;
+  font-size: 22px;
   line-height: 1.2;
 }
 
-.hero-description {
+.toolbar-description {
   margin: 0;
   max-width: 720px;
   color: var(--text-muted);
 }
 
-.hero-actions {
+.toolbar-badge {
+  padding: 6px 10px;
+  font-size: var(--fs-caption);
+  color: var(--accent);
+}
+
+.toolbar-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -845,8 +983,9 @@ void reloadEngineRules();
 .engine-process-layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
 }
 
 .panel {
@@ -858,16 +997,20 @@ void reloadEngineRules();
 }
 
 .rule-panel {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.workbench-panel {
+.process-flow-stack {
+  min-height: 0;
+  display: grid;
+  gap: 16px;
   align-content: start;
 }
 
 .panel-header,
+.panel-header-wide,
 .sub-panel-header,
-.panel-header-wide {
+.log-board-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -883,18 +1026,17 @@ void reloadEngineRules();
 
 .panel-header-wide {
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .panel-subtitle,
 .empty-copy,
-.pending-note,
 .empty-state p {
   margin: 0;
   color: var(--text-muted);
 }
 
-.panel-count,
-.sub-panel-meta {
+.panel-count {
   color: var(--text-muted);
   font-size: var(--fs-sm);
 }
@@ -917,15 +1059,30 @@ void reloadEngineRules();
   border-color: color-mix(in srgb, var(--accent) 35%, var(--stroke-soft));
 }
 
-.content-stack {
+.summary-strip {
   display: grid;
-  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.sub-panel {
+.summary-stat,
+.side-panel {
   padding: 14px;
+}
+
+.summary-stat {
   display: grid;
-  gap: 12px;
+  gap: 4px;
+  background: var(--bg-input);
+}
+
+.summary-stat-label {
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+
+.summary-stat strong {
+  font-size: 16px;
 }
 
 .source-list {
@@ -952,6 +1109,20 @@ void reloadEngineRules();
   gap: 4px;
 }
 
+.source-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.source-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .source-main strong,
 .source-meta {
   min-width: 0;
@@ -965,13 +1136,64 @@ void reloadEngineRules();
   font-size: var(--fs-sm);
 }
 
+.source-compact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-inline-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 999px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-state-badge {
+  padding: 4px 8px;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  background: var(--bg-input);
+}
+
+.source-state-badge.ready,
+.source-state-badge.loading {
+  color: var(--accent);
+}
+
+.source-state-badge.error {
+  color: var(--danger, #d34b4b);
+}
+
 .source-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 120px 120px;
   gap: 10px;
 }
 
+.source-card-details {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--stroke-soft);
+}
+
 .field-block {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rule-select-field {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -982,8 +1204,14 @@ void reloadEngineRules();
   color: var(--text-muted);
 }
 
+.rule-select-field span {
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+
 .field-block input,
-.field-block select {
+.field-block select,
+.rule-select-field select {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--stroke-soft);
@@ -1013,11 +1241,41 @@ void reloadEngineRules();
   color: var(--text-main);
 }
 
+.header-disclosure {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--stroke-soft);
+  padding-top: 10px;
+}
+
+.header-disclosure-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.header-disclosure-summary::-webkit-details-marker {
+  display: none;
+}
+
+.header-disclosure-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-caption);
+}
+
 .header-chip-list {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  max-height: 116px;
+  max-height: 156px;
   overflow: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -1077,10 +1335,6 @@ void reloadEngineRules();
 }
 
 .log-board-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
   color: var(--text-muted);
   font-size: var(--fs-sm);
 }
@@ -1091,7 +1345,7 @@ void reloadEngineRules();
   list-style: none;
   display: grid;
   gap: 8px;
-  max-height: 280px;
+  max-height: 360px;
   overflow: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -1168,32 +1422,51 @@ void reloadEngineRules();
   color: var(--text-main);
 }
 
+.text-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  padding: 0;
+}
+
 .primary-btn:hover:not(:disabled),
-.secondary-btn:hover:not(:disabled) {
+.secondary-btn:hover:not(:disabled),
+.text-btn:hover:not(:disabled) {
   transform: translateY(-1px);
 }
 
 .primary-btn:disabled,
-.secondary-btn:disabled {
+.secondary-btn:disabled,
+.text-btn:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-@media (max-width: 1180px) {
-  .engine-process-layout {
-    grid-template-columns: 1fr;
-  }
+.sub-panel-header {
+  flex-wrap: wrap;
 }
 
 @media (max-width: 860px) {
-  .engine-process-hero,
-  .source-card-top {
+  .engine-process-toolbar,
+  .source-card-top,
+  .source-actions {
     flex-direction: column;
   }
 
-  .hero-actions {
+  .toolbar-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .source-actions {
+    align-items: stretch;
+  }
+
+  .summary-strip {
+    grid-template-columns: 1fr;
   }
 
   .source-grid {
