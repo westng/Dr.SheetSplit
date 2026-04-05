@@ -133,6 +133,20 @@ export function validateEngineRuleDraft(rule: EngineRuleDefinition): EngineRuleV
   ) {
     errors.push(t("engineRules.validation.sheetSplitSourceTableRequired"));
   }
+  if (
+    rule.result.sheetConfig.mode === "split_field" &&
+    rule.result.sheetConfig.sheetValueFilterMode === "exclude_manual" &&
+    !hasText(rule.result.sheetConfig.sheetValueFilterValuesText)
+  ) {
+    errors.push(t("engineRules.validation.sheetValueFilterValuesRequired"));
+  }
+  if (
+    rule.result.sheetConfig.mode === "split_field" &&
+    rule.result.sheetConfig.sheetValueFilterMode === "exclude_mapping_source" &&
+    !hasText(rule.result.sheetConfig.sheetValueFilterMappingGroupId)
+  ) {
+    errors.push(t("engineRules.validation.sheetValueFilterMappingRequired"));
+  }
 
   const templateVariables = Array.from(
     new Set([
@@ -200,7 +214,13 @@ export function validateEngineRuleDraft(rule: EngineRuleDefinition): EngineRuleV
     if (field.nameMode === "expression" && !hasText(field.nameExpressionText)) {
       errors.push(t("engineRules.validation.outputNameExpressionRequired", { row }));
     }
-    if (field.valueMode !== "expression" && field.valueMode !== "constant" && !hasText(field.sourceTableId)) {
+    if (
+      field.valueMode !== "expression" &&
+      field.valueMode !== "constant" &&
+      field.valueMode !== "dynamic_group_sum" &&
+      field.valueMode !== "dynamic_group_avg" &&
+      !hasText(field.sourceTableId)
+    ) {
       errors.push(t("engineRules.validation.outputSourceTableRequired", { row }));
     }
     if (
@@ -209,6 +229,8 @@ export function validateEngineRuleDraft(rule: EngineRuleDefinition): EngineRuleV
       field.valueMode !== "mapping" &&
       field.valueMode !== "fill" &&
       field.valueMode !== "dynamic_columns" &&
+      field.valueMode !== "dynamic_group_sum" &&
+      field.valueMode !== "dynamic_group_avg" &&
       !hasText(field.sourceField)
     ) {
       errors.push(t("engineRules.validation.outputSourceFieldRequired", { row }));
@@ -273,15 +295,36 @@ export function validateEngineRuleDraft(rule: EngineRuleDefinition): EngineRuleV
         errors.push(t("engineRules.validation.outputDynamicValueFieldRequired", { row }));
       }
     }
+    if (
+      (field.valueMode === "dynamic_group_sum" || field.valueMode === "dynamic_group_avg") &&
+      !hasText(field.dynamicGroupAggregateConfig.sourceFieldId)
+    ) {
+      errors.push(t("engineRules.validation.outputDynamicAggregateSourceRequired", { row }));
+    }
+    if (field.valueMode === "dynamic_group_sum" || field.valueMode === "dynamic_group_avg") {
+      const sourceField = rule.outputFields.find((item) => item.id === field.dynamicGroupAggregateConfig.sourceFieldId);
+      if (
+        hasText(field.dynamicGroupAggregateConfig.sourceFieldId) &&
+        (!sourceField || sourceField.valueMode !== "dynamic_columns" || !sourceField.dynamicColumnConfig.enabled)
+      ) {
+        errors.push(t("engineRules.validation.outputDynamicAggregateSourceInvalid", { row }));
+      }
+    }
   });
 
   if (rule.result.totalRow.enabled) {
     if (!hasText(rule.result.totalRow.label)) {
       errors.push(t("engineRules.validation.totalRowLabelRequired"));
     }
-    if (rule.result.totalRow.sumFields.length === 0) {
+    if (rule.result.totalRow.fieldConfigs.length === 0) {
       errors.push(t("engineRules.validation.totalRowSumFieldsRequired"));
     }
+    rule.result.totalRow.fieldConfigs.forEach((config, index) => {
+      const row = index + 1;
+      if (!hasText(config.fieldName)) {
+        errors.push(t("engineRules.validation.totalRowFieldRequired", { row }));
+      }
+    });
   }
 
   return {

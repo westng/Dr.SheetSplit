@@ -3,14 +3,17 @@ import { ref } from "vue";
 import { i18n } from "../i18n";
 import {
   cloneEngineRuleDefinition,
+  createEmptyEngineRuleStyleConfig,
   createEmptyEngineResultCompletionConfig,
   createEmptyEngineOutputFallbackConfig,
   createEmptyEngineSheetConfig,
   createEmptyEngineSheetTemplate,
   createEmptyEngineFieldFillConfig,
+  createEmptyEngineDynamicGroupAggregateConfig,
   createEmptyEngineRuleDefinition,
   createEmptyEngineTextAggregateConfig,
   createEmptyEngineTotalRowConfig,
+  createEmptyEngineTotalRowFieldConfig,
   createEmptyEngineDynamicColumnConfig,
   type EngineEmptyValuePolicy,
   type EngineOutputNameMode,
@@ -22,14 +25,20 @@ import {
   type EngineRelationJoinType,
   type EngineRelationMultiMatchStrategy,
   type EngineRuleDefinition,
+  type EngineRuleStyleConfig,
   type EngineRuleResultConfig,
   type EngineSheetConfig,
   type EngineSheetSplitScope,
+  type EngineSheetValueFilterMode,
   type EngineSheetTemplate,
   type EngineSheetMode,
+  type EngineStyleHorizontalAlign,
+  type EngineStyleToken,
   type EngineRuleSource,
   type EngineRuleType,
+  type EngineTotalRowAggregateMode,
   type EngineTotalRowConfig,
+  type EngineTotalRowFieldConfig,
   type EngineResultGroupField,
   type EngineResultCompletionBaselineType,
   type EngineResultCompletionConfig,
@@ -104,12 +113,22 @@ function normalizeSheetSplitScope(value: unknown): EngineSheetSplitScope {
   return value === "source_field" ? "source_field" : "result_field";
 }
 
+function normalizeSheetValueFilterMode(value: unknown): EngineSheetValueFilterMode {
+  if (value === "exclude_manual" || value === "exclude_mapping_source") {
+    return value;
+  }
+  return "none";
+}
+
 function normalizeRelationJoinType(value: unknown): EngineRelationJoinType {
   return value === "inner_join" ? "inner_join" : "left_join";
 }
 
 function normalizeRelationMultiMatchStrategy(value: unknown): EngineRelationMultiMatchStrategy {
-  return value === "error" ? "error" : "first";
+  if (value === "all" || value === "error") {
+    return value;
+  }
+  return "first";
 }
 
 function normalizeResultCompletionMode(value: unknown): EngineResultCompletionMode {
@@ -147,7 +166,9 @@ function normalizeOutputValueMode(value: unknown): EngineOutputValueMode {
     value === "mapping" ||
     value === "fill" ||
     value === "text_aggregate" ||
-    value === "dynamic_columns"
+    value === "dynamic_columns" ||
+    value === "dynamic_group_sum" ||
+    value === "dynamic_group_avg"
   ) {
     return value;
   }
@@ -180,6 +201,57 @@ function normalizeEmptyValuePolicy(value: unknown): EngineEmptyValuePolicy {
     return value;
   }
   return "empty";
+}
+
+function normalizeStyleHorizontalAlign(value: unknown): EngineStyleHorizontalAlign {
+  if (value === "center" || value === "right") {
+    return value;
+  }
+  return "left";
+}
+
+function normalizeTotalRowAggregateMode(value: unknown): EngineTotalRowAggregateMode {
+  if (value === "avg" || value === "single_first" || value === "single_last" || value === "fixed") {
+    return value;
+  }
+  return "sum";
+}
+
+function normalizeColorValue(value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.startsWith("#") ? text : `#${text}`;
+}
+
+function normalizeStyleToken(value: unknown, fallback: EngineStyleToken): EngineStyleToken {
+  if (!value || typeof value !== "object") {
+    return fallback;
+  }
+  const input = value as Partial<EngineStyleToken>;
+  const fontSize = Number(input.fontSize);
+  return {
+    bold: typeof input.bold === "boolean" ? input.bold : fallback.bold,
+    fontSize: Number.isFinite(fontSize) && fontSize >= 8 && fontSize <= 72 ? Math.round(fontSize) : fallback.fontSize,
+    textColor: normalizeColorValue(input.textColor),
+    backgroundColor: normalizeColorValue(input.backgroundColor),
+    horizontalAlign: normalizeStyleHorizontalAlign(input.horizontalAlign),
+  };
+}
+
+function normalizeRuleStyleConfig(value: unknown): EngineRuleStyleConfig {
+  const fallback = createEmptyEngineRuleStyleConfig();
+  if (!value || typeof value !== "object") {
+    return fallback;
+  }
+  const input = value as Partial<EngineRuleStyleConfig>;
+  return {
+    title: normalizeStyleToken(input.title, fallback.title),
+    header: normalizeStyleToken(input.header, fallback.header),
+    data: normalizeStyleToken(input.data, fallback.data),
+    totalRow: normalizeStyleToken(input.totalRow, fallback.totalRow),
+  };
 }
 
 function normalizePositiveInt(value: unknown, fallbackValue: number): number {
@@ -268,6 +340,21 @@ function normalizeResultSortField(value: unknown): EngineResultSortField | null 
     id: String(input.id ?? "").trim() || crypto.randomUUID(),
     fieldName: String(input.fieldName ?? "").trim(),
     direction: normalizeSortDirection(input.direction),
+  };
+}
+
+function normalizeTotalRowFieldConfig(value: unknown): EngineTotalRowFieldConfig | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const input = value as Partial<EngineTotalRowFieldConfig>;
+  return {
+    ...createEmptyEngineTotalRowFieldConfig(),
+    id: String(input.id ?? "").trim() || crypto.randomUUID(),
+    fieldName: String(input.fieldName ?? "").trim(),
+    aggregateMode: normalizeTotalRowAggregateMode(input.aggregateMode),
+    fixedValue: String(input.fixedValue ?? ""),
   };
 }
 
@@ -438,6 +525,16 @@ function normalizeOutputField(value: unknown): EngineRuleOutputField | null {
           ? String((input.dynamicColumnConfig as { nameSuffix?: unknown }).nameSuffix ?? "")
           : "",
     },
+    dynamicGroupAggregateConfig: {
+      ...createEmptyEngineDynamicGroupAggregateConfig(),
+      ...(input.dynamicGroupAggregateConfig && typeof input.dynamicGroupAggregateConfig === "object"
+        ? input.dynamicGroupAggregateConfig
+        : {}),
+      sourceFieldId:
+        input.dynamicGroupAggregateConfig && typeof input.dynamicGroupAggregateConfig === "object"
+          ? String((input.dynamicGroupAggregateConfig as { sourceFieldId?: unknown }).sourceFieldId ?? "").trim()
+          : "",
+    },
     emptyValuePolicy: normalizeEmptyValuePolicy(input.emptyValuePolicy),
     defaultValue: String(input.defaultValue ?? ""),
     dateOutputFormat: String((input as { dateOutputFormat?: unknown }).dateOutputFormat ?? "YYYY/M/D"),
@@ -481,6 +578,22 @@ function normalizeResultConfig(value: unknown): EngineRuleResultConfig {
     input.sheetConfig && typeof input.sheetConfig === "object" ? (input.sheetConfig as Partial<EngineSheetConfig>) : {};
   const totalRowInput =
     input.totalRow && typeof input.totalRow === "object" ? (input.totalRow as Partial<EngineTotalRowConfig>) : {};
+  const normalizedFieldConfigs = Array.isArray((totalRowInput as { fieldConfigs?: unknown }).fieldConfigs)
+    ? ((totalRowInput as { fieldConfigs?: unknown[] }).fieldConfigs ?? [])
+        .map(normalizeTotalRowFieldConfig)
+        .filter((item): item is EngineTotalRowFieldConfig => item !== null)
+    : [];
+  const legacySumFieldConfigs = Array.isArray((totalRowInput as { sumFields?: unknown }).sumFields)
+    ? Array.from(
+        new Set(
+          ((totalRowInput as { sumFields?: unknown[] }).sumFields ?? []).map((item) => String(item).trim()).filter(Boolean),
+        ),
+      ).map((fieldName) => ({
+        ...createEmptyEngineTotalRowFieldConfig(),
+        fieldName,
+        aggregateMode: "sum" as const,
+      }))
+    : [];
 
   return {
     groupFields: groupFields.length > 0 ? groupFields : fallback.groupFields,
@@ -497,15 +610,22 @@ function normalizeResultConfig(value: unknown): EngineRuleResultConfig {
       splitSourceTableId: String(sheetInput.splitSourceTableId ?? "").trim(),
       splitField: String(sheetInput.splitField ?? "").trim(),
       sheetNameTemplate: String(sheetInput.sheetNameTemplate ?? ""),
+      sheetValueFilterMode: normalizeSheetValueFilterMode(
+        (sheetInput as { sheetValueFilterMode?: unknown }).sheetValueFilterMode,
+      ),
+      sheetValueFilterValuesText: String(
+        (sheetInput as { sheetValueFilterValuesText?: unknown }).sheetValueFilterValuesText ?? "",
+      ),
+      sheetValueFilterMappingGroupId: String(
+        (sheetInput as { sheetValueFilterMappingGroupId?: unknown }).sheetValueFilterMappingGroupId ?? "",
+      ).trim(),
     },
     totalRow: {
       ...createEmptyEngineTotalRowConfig(),
       enabled: typeof totalRowInput.enabled === "boolean" ? totalRowInput.enabled : false,
       label: String(totalRowInput.label ?? fallback.totalRow.label ?? t("engineRules.defaults.totalRowLabel")),
       labelField: String(totalRowInput.labelField ?? "").trim(),
-      sumFields: Array.isArray(totalRowInput.sumFields)
-        ? Array.from(new Set(totalRowInput.sumFields.map((item) => String(item).trim()).filter(Boolean)))
-        : [],
+      fieldConfigs: normalizedFieldConfigs.length > 0 ? normalizedFieldConfigs : legacySumFieldConfigs,
     },
   };
 }
@@ -563,6 +683,7 @@ function normalizeEngineRule(value: unknown): EngineRuleDefinition | null {
     relations,
     result: normalizeResultConfig(input.result),
     sheetTemplate: normalizeSheetTemplate((input as { sheetTemplate?: unknown }).sheetTemplate),
+    styleConfig: normalizeRuleStyleConfig((input as { styleConfig?: unknown }).styleConfig),
     outputFields: outputFields.length > 0 ? outputFields : fallback.outputFields,
     createdAt: typeof input.createdAt === "string" ? input.createdAt : fallback.createdAt,
     updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : fallback.updatedAt,

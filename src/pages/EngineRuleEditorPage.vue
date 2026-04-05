@@ -3,7 +3,7 @@ import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, type CSSProperties } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import { useEngineRuleStore, useMappingStore } from "../store";
@@ -13,6 +13,8 @@ import {
   ENGINE_OUTPUT_DATA_TYPES,
   ENGINE_OUTPUT_NAME_MODES,
   ENGINE_OUTPUT_VALUE_MODES,
+  ENGINE_STYLE_HORIZONTAL_ALIGNS,
+  ENGINE_TOTAL_ROW_AGGREGATE_MODES,
   ENGINE_RELATION_JOIN_TYPES,
   ENGINE_RELATION_MULTI_MATCH_STRATEGIES,
   ENGINE_RESULT_COMPLETION_BASELINE_TYPES,
@@ -22,6 +24,7 @@ import {
   ENGINE_RULE_TYPES,
   ENGINE_SHEET_MODES,
   ENGINE_SHEET_SPLIT_SCOPES,
+  ENGINE_SHEET_VALUE_FILTER_MODES,
   ENGINE_SORT_DIRECTIONS,
   ENGINE_SOURCE_FILTER_OPERATORS,
   cloneEngineRuleDefinition,
@@ -29,14 +32,17 @@ import {
   createEmptyEngineResultGroupField,
   createEmptyEngineResultSortField,
   createEmptyEngineRuleDefinition,
+  createEmptyEngineRuleStyleConfig,
   createEmptyEngineRuleOutputField,
   createEmptyEngineRuleSource,
   createEmptyEngineSourceRelation,
   createEmptyEngineSourceFilter,
+  createEmptyEngineTotalRowFieldConfig,
   type EngineRuleDefinition,
   type EngineRuleOutputField,
   type EngineRuleSource,
   type EngineSourceRelation,
+  type EngineTotalRowFieldConfig,
 } from "../types/engineRule";
 import { validateEngineRuleDraft } from "../utils/engineRuleValidator";
 import { extractTitleTemplateVariables, toExcelColumnLabel } from "../utils/ruleTemplate";
@@ -64,6 +70,7 @@ type EditorPanelKey =
   | "sheet"
   | "sheetTemplate"
   | "totalRow"
+  | "style"
   | `source:${string}`
   | `relation:${string}`
   | `dimension:${string}`
@@ -90,6 +97,7 @@ const collapsedSidebarSections = ref<Record<string, boolean>>({
   dimensions: false,
   outputs: false,
   sheet: false,
+  style: false,
 });
 const draggingOutputFieldId = ref("");
 const dragOverOutputFieldId = ref("");
@@ -108,6 +116,8 @@ const mappingOptions = computed(() =>
     name: group.name,
   })),
 );
+
+const STYLE_TARGET_KEYS = ["title", "header", "data", "totalRow"] as const;
 
 function formatSourceOptionLabel(source: EngineRuleSource, index: number): string {
   const normalizedIndex = index >= 0 ? index : 0;
@@ -210,6 +220,9 @@ const previewHeaders = computed(() => {
 const mergeRangeEndCell = computed(() => `${toExcelColumnLabel(Math.max(previewHeaders.value.length, 1))}1`);
 
 const totalRowLabelFieldOptions = computed(() => outputFieldNameOptions.value);
+const totalRowUsedFieldNames = computed(() =>
+  draftRule.value.result.totalRow.fieldConfigs.map((item) => item.fieldName).filter(Boolean),
+);
 
 const previewColumnCount = computed(() =>
   Math.max(previewHeaders.value.length, 13),
@@ -330,6 +343,9 @@ const previewCells = computed<PreviewCell[]>(() => {
         ? `{${outputField.dynamicColumnConfig.columnField.trim()}}`
         : "{动态列}";
     }
+    if (outputField && (outputField.valueMode === "dynamic_group_sum" || outputField.valueMode === "dynamic_group_avg")) {
+      value = "{动态列聚合}";
+    }
     cells.push({
       key: `sample-${index}`,
       row: previewDataRowIndex.value,
@@ -362,12 +378,16 @@ const previewCells = computed<PreviewCell[]>(() => {
       if (index === labelColumnIndex) {
         return;
       }
-      if (draftRule.value.result.totalRow.sumFields.includes(header)) {
+      const config = draftRule.value.result.totalRow.fieldConfigs.find((item) => item.fieldName === header);
+      if (config) {
         cells.push({
           key: `total-sum-${index}`,
           row: previewTotalRowIndex.value as number,
           col: index + 1,
-          value: "0",
+          value:
+            config.aggregateMode === "fixed"
+              ? config.fixedValue || t("engineRules.messages.totalRowFixedValuePlaceholder")
+              : t(`engineRules.totalRowAggregateModes.${config.aggregateMode}`),
           kind: "total",
           panelKey: "totalRow",
           active: panelMatches("totalRow"),
@@ -492,14 +512,80 @@ function rowCompletionStatus(): "empty" | "partial" | "ready" {
 function sheetSectionStatus(): "empty" | "partial" | "ready" {
   const sheetReady =
     draftRule.value.result.sheetConfig.mode !== "split_field" || Boolean(draftRule.value.result.sheetConfig.splitField.trim());
+  const filterReady =
+    draftRule.value.result.sheetConfig.mode !== "split_field" ||
+    draftRule.value.result.sheetConfig.sheetValueFilterMode === "none" ||
+    (draftRule.value.result.sheetConfig.sheetValueFilterMode === "exclude_manual" &&
+      Boolean(draftRule.value.result.sheetConfig.sheetValueFilterValuesText.trim())) ||
+    (draftRule.value.result.sheetConfig.sheetValueFilterMode === "exclude_mapping_source" &&
+      Boolean(draftRule.value.result.sheetConfig.sheetValueFilterMappingGroupId.trim()));
   const templateStatus = draftRule.value.sheetTemplate.titleEnabled ? "ready" : "empty";
-  if (sheetReady && templateStatus === "ready") {
+  if (sheetReady && filterReady && templateStatus === "ready") {
     return "ready";
   }
-  if (sheetReady || templateStatus !== "empty") {
+  if (sheetReady || filterReady || templateStatus !== "empty") {
     return "partial";
   }
   return "empty";
+}
+
+function styleSectionStatus(): "empty" | "partial" | "ready" {
+  const defaultConfig = createEmptyEngineRuleStyleConfig();
+  const customized = STYLE_TARGET_KEYS.some((key) =>
+    JSON.stringify(draftRule.value.styleConfig[key]) !== JSON.stringify(defaultConfig[key]),
+  );
+  return customized ? "ready" : "empty";
+}
+
+function previewStyleForKind(kind: PreviewCell["kind"]): CSSProperties {
+  const styleKey = kind === "title"
+    ? "title"
+    : kind === "header"
+      ? "header"
+      : kind === "total"
+        ? "totalRow"
+        : "data";
+  const styleToken = draftRule.value.styleConfig[styleKey];
+  return {
+    fontWeight: styleToken.bold ? "700" : "400",
+    fontSize: `${styleToken.fontSize}px`,
+    color: styleToken.textColor || undefined,
+    backgroundColor: styleToken.backgroundColor || undefined,
+    justifyContent:
+      styleToken.horizontalAlign === "left"
+        ? "flex-start"
+        : styleToken.horizontalAlign === "right"
+          ? "flex-end"
+          : "center",
+    textAlign: styleToken.horizontalAlign,
+  };
+}
+
+function normalizeStyleColorInput(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.startsWith("#") ? normalized : `#${normalized}`;
+}
+
+function resolveStyleColorPickerValue(value: string, fallback: string): string {
+  return normalizeStyleColorInput(value) || fallback;
+}
+
+function setStyleColor(
+  styleKey: (typeof STYLE_TARGET_KEYS)[number],
+  target: "textColor" | "backgroundColor",
+  color: string,
+): void {
+  draftRule.value.styleConfig[styleKey][target] = color;
+}
+
+function clearStyleColor(
+  styleKey: (typeof STYLE_TARGET_KEYS)[number],
+  target: "textColor" | "backgroundColor",
+): void {
+  draftRule.value.styleConfig[styleKey][target] = "";
 }
 
 const currentPanelTitle = computed(() => {
@@ -529,6 +615,9 @@ const currentPanelTitle = computed(() => {
   }
   if (activePanelKey.value === "totalRow") {
     return t("engineRules.editor.totalRowTitle");
+  }
+  if (activePanelKey.value === "style") {
+    return t("engineRules.editor.styleTitle");
   }
   if (activeSource.value) {
     return formatSourceOptionLabel(
@@ -578,6 +667,9 @@ const currentPanelDescription = computed(() => {
   if (activePanelKey.value === "totalRow") {
     return t("engineRules.messages.totalRowHint");
   }
+  if (activePanelKey.value === "style") {
+    return t("engineRules.messages.styleHint");
+  }
   return "";
 });
 
@@ -601,6 +693,27 @@ function fieldsForSourceId(sourceId: string): string[] {
 
 function fieldsForOutputField(field: EngineRuleOutputField): string[] {
   return fieldsForSourceId(field.sourceTableId);
+}
+
+function dynamicAggregateSourceOptions(field: EngineRuleOutputField): Array<{ id: string; label: string }> {
+  return draftRule.value.outputFields
+    .map((item, index) => ({
+      id: item.id,
+      label: resolveOutputFieldDisplayName(item, index),
+      valueMode: item.valueMode,
+      enabled: item.dynamicColumnConfig.enabled,
+    }))
+    .filter((item) => item.id !== field.id && item.valueMode === "dynamic_columns" && item.enabled)
+    .map(({ id, label }) => ({ id, label }));
+}
+
+function fieldsForOutputMapping(field: EngineRuleOutputField): string[] {
+  const sourceFields = fieldsForSourceId(field.sourceTableId);
+  const dimensionFields = resultFieldOptions.value;
+  const stableOutputFields = draftRule.value.outputFields
+    .filter((item) => item.id !== field.id && item.nameMode === "fixed" && item.fieldName.trim())
+    .map((item) => item.fieldName.trim());
+  return Array.from(new Set([...sourceFields, ...dimensionFields, ...stableOutputFields]));
 }
 
 function fieldsForOutputName(field: EngineRuleOutputField): string[] {
@@ -775,6 +888,16 @@ function outputStatus(field: EngineRuleOutputField): "empty" | "partial" | "read
   }
   if (field.valueMode === "dynamic_columns") {
     if (!(field.dynamicColumnConfig.columnField && field.dynamicColumnConfig.valueField)) {
+      return "partial";
+    }
+    return fallbackStatus(field);
+  }
+  if (field.valueMode === "dynamic_group_sum" || field.valueMode === "dynamic_group_avg") {
+    const sourceFieldId = field.dynamicGroupAggregateConfig.sourceFieldId.trim();
+    if (!sourceFieldId) {
+      return "partial";
+    }
+    if (!dynamicAggregateSourceOptions(field).some((item) => item.id === sourceFieldId)) {
       return "partial";
     }
     return fallbackStatus(field);
@@ -1068,12 +1191,27 @@ function removeOutputFilter(field: EngineRuleOutputField, filterId: string): voi
   field.filters = field.filters.filter((filter) => filter.id !== filterId);
 }
 
-function toggleTotalRowSumField(fieldName: string): void {
-  if (draftRule.value.result.totalRow.sumFields.includes(fieldName)) {
-    draftRule.value.result.totalRow.sumFields = draftRule.value.result.totalRow.sumFields.filter((item) => item !== fieldName);
-    return;
+function addTotalRowFieldConfig(): void {
+  const nextFieldName = outputFieldNameOptions.value.find((name) => !totalRowUsedFieldNames.value.includes(name)) ?? "";
+  draftRule.value.result.totalRow.fieldConfigs = [
+    ...draftRule.value.result.totalRow.fieldConfigs,
+    {
+      ...createEmptyEngineTotalRowFieldConfig(),
+      fieldName: nextFieldName,
+    },
+  ];
+}
+
+function removeTotalRowFieldConfig(configId: string): void {
+  draftRule.value.result.totalRow.fieldConfigs = draftRule.value.result.totalRow.fieldConfigs.filter(
+    (item) => item.id !== configId,
+  );
+}
+
+function handleTotalRowAggregateModeChange(config: EngineTotalRowFieldConfig): void {
+  if (config.aggregateMode !== "fixed") {
+    config.fixedValue = "";
   }
-  draftRule.value.result.totalRow.sumFields = [...draftRule.value.result.totalRow.sumFields, fieldName];
 }
 
 function handleValueModeChange(field: EngineRuleOutputField): void {
@@ -1111,6 +1249,9 @@ function handleValueModeChange(field: EngineRuleOutputField): void {
   } else {
     field.dynamicColumnConfig.enabled = true;
   }
+  if (field.valueMode !== "dynamic_group_sum" && field.valueMode !== "dynamic_group_avg") {
+    field.dynamicGroupAggregateConfig.sourceFieldId = "";
+  }
 }
 
 function handleFallbackModeChange(field: EngineRuleOutputField): void {
@@ -1138,6 +1279,15 @@ function handleOutputNameModeChange(field: EngineRuleOutputField): void {
   }
   if (field.nameMode !== "expression") {
     field.nameExpressionText = "";
+  }
+}
+
+function handleSheetValueFilterModeChange(): void {
+  if (draftRule.value.result.sheetConfig.sheetValueFilterMode !== "exclude_manual") {
+    draftRule.value.result.sheetConfig.sheetValueFilterValuesText = "";
+  }
+  if (draftRule.value.result.sheetConfig.sheetValueFilterMode !== "exclude_mapping_source") {
+    draftRule.value.result.sheetConfig.sheetValueFilterMappingGroupId = "";
   }
 }
 
@@ -1421,9 +1571,20 @@ watch(
     ) {
       draftRule.value.result.totalRow.labelField = "";
     }
-    draftRule.value.result.totalRow.sumFields = draftRule.value.result.totalRow.sumFields.filter((item) =>
-      outputFieldNameOptions.value.includes(item),
-    );
+    const seen = new Set<string>();
+    draftRule.value.result.totalRow.fieldConfigs = draftRule.value.result.totalRow.fieldConfigs.filter((item) => {
+      if (!item.fieldName) {
+        return true;
+      }
+      if (!outputFieldNameOptions.value.includes(item.fieldName)) {
+        return false;
+      }
+      if (seen.has(item.fieldName)) {
+        return false;
+      }
+      seen.add(item.fieldName);
+      return true;
+    });
   },
   { immediate: true },
 );
@@ -1759,6 +1920,15 @@ onUnmounted(() => {
             <span class="status-dot" :class="draftRule.result.totalRow.enabled ? 'ready' : 'empty'" />
             <span class="tree-item-label">{{ $t("engineRules.editor.totalRowTitle") }}</span>
           </button>
+          <button
+            type="button"
+            class="tree-item tree-item-root"
+            :class="{ active: panelMatches('style') }"
+            @click="setActivePanel('style')"
+          >
+            <span class="status-dot" :class="styleSectionStatus()" />
+            <span class="tree-item-label">{{ $t("engineRules.editor.styleTitle") }}</span>
+          </button>
         </div>
       </aside>
 
@@ -1816,7 +1986,8 @@ onUnmounted(() => {
                 :tabindex="cell.panelKey ? 0 : undefined"
                 :style="{
                   gridColumn: `${cell.col} / span ${cell.colSpan ?? 1}`,
-                  gridRow: `${cell.row}`
+                  gridRow: `${cell.row}`,
+                  ...previewStyleForKind(cell.kind)
                 }"
                 @click="handlePreviewCellClick(cell)"
                 @keydown.enter.prevent="handlePreviewCellClick(cell)"
@@ -2625,7 +2796,15 @@ onUnmounted(() => {
               <div class="field-grid field-grid-two">
                 <label class="field-block">
                   <span>{{ $t("engineRules.fields.sourceTable") }}</span>
-                  <select v-model="activeOutput.sourceTableId" :disabled="activeOutput.valueMode === 'constant'">
+                  <select
+                    v-model="activeOutput.sourceTableId"
+                    :disabled="
+                      activeOutput.valueMode === 'constant' ||
+                      activeOutput.valueMode === 'expression' ||
+                      activeOutput.valueMode === 'dynamic_group_sum' ||
+                      activeOutput.valueMode === 'dynamic_group_avg'
+                    "
+                  >
                     <option value="">{{ $t("engineRules.messages.selectSource") }}</option>
                     <option v-for="source in sourceOptions" :key="`output-source-${source.id}`" :value="source.id">
                       {{ source.label }}
@@ -2636,7 +2815,14 @@ onUnmounted(() => {
                   <span>{{ $t("engineRules.fields.sourceField") }}</span>
                   <select
                     v-model="activeOutput.sourceField"
-                    :disabled="!activeOutput.sourceTableId || activeOutput.valueMode === 'expression' || activeOutput.valueMode === 'mapping' || activeOutput.valueMode === 'constant'"
+                    :disabled="
+                      !activeOutput.sourceTableId ||
+                      activeOutput.valueMode === 'expression' ||
+                      activeOutput.valueMode === 'mapping' ||
+                      activeOutput.valueMode === 'constant' ||
+                      activeOutput.valueMode === 'dynamic_group_sum' ||
+                      activeOutput.valueMode === 'dynamic_group_avg'
+                    "
                   >
                     <option value="">{{ $t("engineRules.messages.selectField") }}</option>
                     <option
@@ -2746,7 +2932,7 @@ onUnmounted(() => {
                   <span>{{ $t("engineRules.fields.mappingSourceFields") }}</span>
                   <div class="group-options">
                     <label
-                      v-for="name in fieldsForOutputField(activeOutput)"
+                      v-for="name in fieldsForOutputMapping(activeOutput)"
                       :key="`${activeOutput.id}-mapping-source-${name}`"
                       class="group-option"
                     >
@@ -2913,6 +3099,26 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <div
+                v-else-if="activeOutput.valueMode === 'dynamic_group_sum' || activeOutput.valueMode === 'dynamic_group_avg'"
+                class="inspector-subsection"
+              >
+                <p class="hint-text">{{ $t("engineRules.messages.dynamicAggregateHint") }}</p>
+                <label class="field-block">
+                  <span>{{ $t("engineRules.fields.dynamicAggregateSourceField") }}</span>
+                  <select v-model="activeOutput.dynamicGroupAggregateConfig.sourceFieldId">
+                    <option value="">{{ $t("engineRules.messages.selectDynamicAggregateSource") }}</option>
+                    <option
+                      v-for="option in dynamicAggregateSourceOptions(activeOutput)"
+                      :key="`${activeOutput.id}-dynamic-aggregate-${option.id}`"
+                      :value="option.id"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+
               <div class="inspector-subsection">
                 <div class="inspector-inline-head">
                   <h4>{{ $t("engineRules.fields.matchConditions") }}</h4>
@@ -3054,6 +3260,43 @@ onUnmounted(() => {
                 <span>{{ $t("engineRules.fields.sheetNameTemplate") }}</span>
                 <input v-model="draftRule.result.sheetConfig.sheetNameTemplate" type="text" />
               </label>
+              <div class="inspector-subsection" v-if="draftRule.result.sheetConfig.mode === 'split_field'">
+                <label class="field-block">
+                  <span>{{ $t("engineRules.fields.sheetValueFilterMode") }}</span>
+                  <select
+                    v-model="draftRule.result.sheetConfig.sheetValueFilterMode"
+                    @change="handleSheetValueFilterModeChange"
+                  >
+                    <option v-for="mode in ENGINE_SHEET_VALUE_FILTER_MODES" :key="mode" :value="mode">
+                      {{ $t(`engineRules.sheetValueFilterModes.${mode}`) }}
+                    </option>
+                  </select>
+                </label>
+                <label
+                  v-if="draftRule.result.sheetConfig.sheetValueFilterMode === 'exclude_manual'"
+                  class="field-block"
+                >
+                  <span>{{ $t("engineRules.fields.sheetValueFilterValues") }}</span>
+                  <textarea
+                    v-model="draftRule.result.sheetConfig.sheetValueFilterValuesText"
+                    rows="4"
+                    :placeholder="$t('engineRules.messages.sheetValueFilterValuesPlaceholder')"
+                  />
+                </label>
+                <label
+                  v-else-if="draftRule.result.sheetConfig.sheetValueFilterMode === 'exclude_mapping_source'"
+                  class="field-block"
+                >
+                  <span>{{ $t("engineRules.fields.sheetValueFilterMappingGroupId") }}</span>
+                  <select v-model="draftRule.result.sheetConfig.sheetValueFilterMappingGroupId">
+                    <option value="">{{ $t("engineRules.messages.selectMapping") }}</option>
+                    <option v-for="mapping in mappingOptions" :key="`sheet-filter-${mapping.id}`" :value="mapping.id">
+                      {{ mapping.name }}
+                    </option>
+                  </select>
+                </label>
+                <p class="hint-text">{{ $t("engineRules.messages.sheetValueFilterHint") }}</p>
+              </div>
             </section>
           </template>
 
@@ -3165,26 +3408,158 @@ onUnmounted(() => {
                     </option>
                   </select>
                 </label>
-                <div class="field-block">
-                  <span>{{ $t("engineRules.fields.totalRowSumFields") }}</span>
-                  <div class="group-options">
-                    <label v-for="name in outputFieldNameOptions" :key="`sum-${name}`" class="group-option">
-                      <input
-                        type="checkbox"
-                        :checked="draftRule.result.totalRow.sumFields.includes(name)"
-                        @change="toggleTotalRowSumField(name)"
-                      />
-                      <button
-                        type="button"
-                        class="group-option-btn"
-                        :class="{ active: draftRule.result.totalRow.sumFields.includes(name) }"
-                        @click.prevent="toggleTotalRowSumField(name)"
-                      />
-                      <span :title="name">{{ name }}</span>
-                    </label>
+                <div class="inspector-subsection">
+                  <div class="inspector-inline-head">
+                    <h4>{{ $t("engineRules.fields.totalRowFieldConfigs") }}</h4>
+                    <button type="button" class="secondary-btn" @click="addTotalRowFieldConfig">
+                      {{ $t("engineRules.actions.addField") }}
+                    </button>
+                  </div>
+                  <p v-if="outputFieldNameOptions.length === 0" class="hint-text">
+                    {{ $t("engineRules.messages.totalRowNoFields") }}
+                  </p>
+                  <p v-else-if="draftRule.result.totalRow.fieldConfigs.length === 0" class="hint-text">
+                    {{ $t("engineRules.messages.totalRowFieldConfigsHint") }}
+                  </p>
+                  <div v-else class="stack-list">
+                    <div
+                      v-for="config in draftRule.result.totalRow.fieldConfigs"
+                      :key="config.id"
+                      class="stack-card stack-card-static"
+                    >
+                      <div class="field-grid field-grid-three">
+                        <label class="field-block">
+                          <span>{{ $t("engineRules.fields.field") }}</span>
+                          <select v-model="config.fieldName">
+                            <option value="">{{ $t("engineRules.messages.selectOutputField") }}</option>
+                            <option
+                              v-for="name in outputFieldNameOptions"
+                              :key="`total-row-field-${config.id}-${name}`"
+                              :value="name"
+                            >
+                              {{ name }}
+                            </option>
+                          </select>
+                        </label>
+                        <label class="field-block">
+                          <span>{{ $t("engineRules.fields.totalRowAggregateMode") }}</span>
+                          <select v-model="config.aggregateMode" @change="handleTotalRowAggregateModeChange(config)">
+                            <option
+                              v-for="mode in ENGINE_TOTAL_ROW_AGGREGATE_MODES"
+                              :key="`total-row-mode-${config.id}-${mode}`"
+                              :value="mode"
+                            >
+                              {{ $t(`engineRules.totalRowAggregateModes.${mode}`) }}
+                            </option>
+                          </select>
+                        </label>
+                        <label v-if="config.aggregateMode === 'fixed'" class="field-block">
+                          <span>{{ $t("engineRules.fields.totalRowFixedValue") }}</span>
+                          <input
+                            v-model="config.fixedValue"
+                            type="text"
+                            :placeholder="$t('engineRules.messages.totalRowFixedValuePlaceholder')"
+                          />
+                        </label>
+                      </div>
+                      <div class="stack-card-actions">
+                        <button type="button" class="text-btn danger" @click="removeTotalRowFieldConfig(config.id)">
+                          {{ $t("engineRules.actions.remove") }}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </template>
+            </section>
+          </template>
+
+          <template v-else-if="panelMatches('style')">
+            <section class="inspector-section">
+              <p class="hint-text">{{ $t("engineRules.messages.styleHint") }}</p>
+              <div class="stack-list">
+                <section
+                  v-for="styleKey in STYLE_TARGET_KEYS"
+                  :key="`style-${styleKey}`"
+                  class="stack-card style-card"
+                >
+                  <div class="style-card-head">
+                    <span>{{ $t(`engineRules.styleTargets.${styleKey}`) }}</span>
+                    <label class="switch" :aria-label="$t('engineRules.fields.styleBold')">
+                      <input v-model="draftRule.styleConfig[styleKey].bold" type="checkbox" />
+                      <span class="switch-track">
+                        <span class="switch-thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  <div class="field-grid field-grid-two style-card-grid">
+                    <label class="field-block">
+                      <span>{{ $t("engineRules.fields.styleFontSize") }}</span>
+                      <input v-model.number="draftRule.styleConfig[styleKey].fontSize" type="number" min="8" max="72" />
+                    </label>
+                    <label class="field-block">
+                      <span>{{ $t("engineRules.fields.styleHorizontalAlign") }}</span>
+                      <select v-model="draftRule.styleConfig[styleKey].horizontalAlign">
+                        <option v-for="align in ENGINE_STYLE_HORIZONTAL_ALIGNS" :key="`${styleKey}-${align}`" :value="align">
+                          {{ $t(`engineRules.styleHorizontalAligns.${align}`) }}
+                        </option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="field-grid field-grid-two style-card-grid">
+                    <label class="field-block style-color-block">
+                      <span>{{ $t("engineRules.fields.styleTextColor") }}</span>
+                      <div class="style-color-picker-row">
+                        <input
+                          class="style-color-picker"
+                          type="color"
+                          :value="resolveStyleColorPickerValue(draftRule.styleConfig[styleKey].textColor, '#111827')"
+                          @input="setStyleColor(styleKey, 'textColor', ($event.target as HTMLInputElement).value)"
+                        />
+                        <button
+                          type="button"
+                          class="secondary-btn style-color-clear"
+                          @click="clearStyleColor(styleKey, 'textColor')"
+                        >
+                          重置
+                        </button>
+                      </div>
+                      <input
+                        :value="draftRule.styleConfig[styleKey].textColor"
+                        type="text"
+                        placeholder="#111827"
+                        @change="setStyleColor(styleKey, 'textColor', normalizeStyleColorInput(($event.target as HTMLInputElement).value))"
+                      />
+                    </label>
+                    <label class="field-block style-color-block">
+                      <span>{{ $t("engineRules.fields.styleBackgroundColor") }}</span>
+                      <div class="style-color-picker-row">
+                        <input
+                          class="style-color-picker"
+                          type="color"
+                          :value="resolveStyleColorPickerValue(draftRule.styleConfig[styleKey].backgroundColor, '#F3F4F6')"
+                          @input="setStyleColor(styleKey, 'backgroundColor', ($event.target as HTMLInputElement).value)"
+                        />
+                        <button
+                          type="button"
+                          class="secondary-btn style-color-clear"
+                          @click="clearStyleColor(styleKey, 'backgroundColor')"
+                        >
+                          清空
+                        </button>
+                      </div>
+                      <input
+                        :value="draftRule.styleConfig[styleKey].backgroundColor"
+                        type="text"
+                        placeholder="#F3F4F6"
+                        @change="setStyleColor(styleKey, 'backgroundColor', normalizeStyleColorInput(($event.target as HTMLInputElement).value))"
+                      />
+                    </label>
+                  </div>
+                </section>
+              </div>
             </section>
           </template>
         </div>
@@ -3422,6 +3797,47 @@ onUnmounted(() => {
 
 .banner-card p {
   margin: 0;
+}
+
+.style-card {
+  gap: 12px;
+  padding: 14px;
+}
+
+.style-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 600;
+}
+
+.style-card-grid {
+  gap: 10px;
+}
+
+.style-color-block {
+  gap: 8px;
+}
+
+.style-color-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.style-color-picker {
+  width: 44px;
+  height: 32px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  background: #fff;
+  padding: 3px;
+  cursor: pointer;
+}
+
+.style-color-clear {
+  min-width: 64px;
 }
 
 .sheet-canvas {

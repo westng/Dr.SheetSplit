@@ -3,13 +3,16 @@ export type EngineSourceFilterOperator = "contains_any" | "equals" | "not_equals
 export type EngineSortDirection = "asc" | "desc";
 export type EngineSheetMode = "single" | "split_field";
 export type EngineSheetSplitScope = "result_field" | "source_field";
+export type EngineSheetValueFilterMode = "none" | "exclude_manual" | "exclude_mapping_source";
 export type EngineRelationJoinType = "left_join" | "inner_join";
-export type EngineRelationMultiMatchStrategy = "first" | "error";
+export type EngineRelationMultiMatchStrategy = "first" | "all" | "error";
 export type EngineResultCompletionMode = "append_missing" | "baseline_only";
 export type EngineResultCompletionBaselineType = "source_table" | "mapping_group" | "manual_values";
 export type EngineResultCompletionMappingValueType = "source" | "target";
 export type EngineTextAggregateDelimiterMode = "newline" | "comma" | "custom";
 export type EngineOutputFallbackMode = "empty" | "constant" | "baseline" | "mapping";
+export type EngineStyleHorizontalAlign = "left" | "center" | "right";
+export type EngineTotalRowAggregateMode = "sum" | "avg" | "single_first" | "single_last" | "fixed";
 export type EngineOutputValueMode =
   | "source"
   | "constant"
@@ -23,7 +26,9 @@ export type EngineOutputValueMode =
   | "mapping"
   | "fill"
   | "text_aggregate"
-  | "dynamic_columns";
+  | "dynamic_columns"
+  | "dynamic_group_sum"
+  | "dynamic_group_avg";
 export type EngineOutputDataType = "text" | "number" | "date" | "dynamic";
 export type EngineEmptyValuePolicy = "empty" | "zero" | "constant" | "error";
 export type EngineOutputNameMode = "fixed" | "source_field" | "mapping" | "expression";
@@ -75,6 +80,9 @@ export type EngineSheetConfig = {
   splitSourceTableId: string;
   splitField: string;
   sheetNameTemplate: string;
+  sheetValueFilterMode: EngineSheetValueFilterMode;
+  sheetValueFilterValuesText: string;
+  sheetValueFilterMappingGroupId: string;
 };
 
 export type EngineSheetTemplate = {
@@ -84,11 +92,33 @@ export type EngineSheetTemplate = {
   dataStartRowIndex: number;
 };
 
+export type EngineStyleToken = {
+  bold: boolean;
+  fontSize: number;
+  textColor: string;
+  backgroundColor: string;
+  horizontalAlign: EngineStyleHorizontalAlign;
+};
+
+export type EngineRuleStyleConfig = {
+  title: EngineStyleToken;
+  header: EngineStyleToken;
+  data: EngineStyleToken;
+  totalRow: EngineStyleToken;
+};
+
 export type EngineTotalRowConfig = {
   enabled: boolean;
   label: string;
   labelField: string;
-  sumFields: string[];
+  fieldConfigs: EngineTotalRowFieldConfig[];
+};
+
+export type EngineTotalRowFieldConfig = {
+  id: string;
+  fieldName: string;
+  aggregateMode: EngineTotalRowAggregateMode;
+  fixedValue: string;
 };
 
 export type EngineResultCompletionConfig = {
@@ -115,6 +145,10 @@ export type EngineDynamicColumnConfig = {
   valueField: string;
   namePrefix: string;
   nameSuffix: string;
+};
+
+export type EngineDynamicGroupAggregateConfig = {
+  sourceFieldId: string;
 };
 
 export type EngineFieldFillConfig = {
@@ -163,6 +197,7 @@ export type EngineRuleOutputField = {
   fallbackConfig: EngineOutputFallbackConfig;
   textAggregateConfig: EngineTextAggregateConfig;
   dynamicColumnConfig: EngineDynamicColumnConfig;
+  dynamicGroupAggregateConfig: EngineDynamicGroupAggregateConfig;
   emptyValuePolicy: EngineEmptyValuePolicy;
   defaultValue: string;
   dateOutputFormat: string;
@@ -186,6 +221,7 @@ export type EngineRuleDefinition = {
   relations: EngineSourceRelation[];
   result: EngineRuleResultConfig;
   sheetTemplate: EngineSheetTemplate;
+  styleConfig: EngineRuleStyleConfig;
   outputFields: EngineRuleOutputField[];
   createdAt: string;
   updatedAt: string;
@@ -200,8 +236,13 @@ export const ENGINE_SOURCE_FILTER_OPERATORS: EngineSourceFilterOperator[] = [
 export const ENGINE_SORT_DIRECTIONS: EngineSortDirection[] = ["asc", "desc"];
 export const ENGINE_SHEET_MODES: EngineSheetMode[] = ["single", "split_field"];
 export const ENGINE_SHEET_SPLIT_SCOPES: EngineSheetSplitScope[] = ["result_field", "source_field"];
+export const ENGINE_SHEET_VALUE_FILTER_MODES: EngineSheetValueFilterMode[] = [
+  "none",
+  "exclude_manual",
+  "exclude_mapping_source",
+];
 export const ENGINE_RELATION_JOIN_TYPES: EngineRelationJoinType[] = ["left_join", "inner_join"];
-export const ENGINE_RELATION_MULTI_MATCH_STRATEGIES: EngineRelationMultiMatchStrategy[] = ["first", "error"];
+export const ENGINE_RELATION_MULTI_MATCH_STRATEGIES: EngineRelationMultiMatchStrategy[] = ["first", "all", "error"];
 export const ENGINE_RESULT_COMPLETION_MODES: EngineResultCompletionMode[] = ["append_missing", "baseline_only"];
 export const ENGINE_RESULT_COMPLETION_BASELINE_TYPES: EngineResultCompletionBaselineType[] = [
   "source_table",
@@ -216,6 +257,14 @@ export const ENGINE_TEXT_AGGREGATE_DELIMITER_MODES: EngineTextAggregateDelimiter
   "newline",
   "comma",
   "custom",
+];
+export const ENGINE_STYLE_HORIZONTAL_ALIGNS: EngineStyleHorizontalAlign[] = ["left", "center", "right"];
+export const ENGINE_TOTAL_ROW_AGGREGATE_MODES: EngineTotalRowAggregateMode[] = [
+  "sum",
+  "avg",
+  "single_first",
+  "single_last",
+  "fixed",
 ];
 export const ENGINE_OUTPUT_FALLBACK_MODES: EngineOutputFallbackMode[] = [
   "empty",
@@ -237,6 +286,8 @@ export const ENGINE_OUTPUT_VALUE_MODES: EngineOutputValueMode[] = [
   "fill",
   "text_aggregate",
   "dynamic_columns",
+  "dynamic_group_sum",
+  "dynamic_group_avg",
 ];
 export const ENGINE_OUTPUT_DATA_TYPES: EngineOutputDataType[] = ["text", "number", "date", "dynamic"];
 export const ENGINE_EMPTY_VALUE_POLICIES: EngineEmptyValuePolicy[] = [
@@ -265,6 +316,46 @@ export function createEmptyEngineRuleSource(): EngineRuleSource {
     sourceGroupHeaderRowIndex: 0,
     sourceHeaders: [],
     preFilters: [],
+  };
+}
+
+export function createEmptyEngineStyleToken(
+  overrides: Partial<EngineStyleToken> = {},
+): EngineStyleToken {
+  return {
+    bold: false,
+    fontSize: 11,
+    textColor: "",
+    backgroundColor: "",
+    horizontalAlign: "left",
+    ...overrides,
+  };
+}
+
+export function createEmptyEngineRuleStyleConfig(): EngineRuleStyleConfig {
+  return {
+    title: createEmptyEngineStyleToken({
+      bold: true,
+      fontSize: 20,
+      horizontalAlign: "center",
+    }),
+    header: createEmptyEngineStyleToken({
+      bold: true,
+      fontSize: 12,
+      backgroundColor: "#F3F4F6",
+      horizontalAlign: "center",
+    }),
+    data: createEmptyEngineStyleToken({
+      bold: false,
+      fontSize: 12,
+      horizontalAlign: "center",
+    }),
+    totalRow: createEmptyEngineStyleToken({
+      bold: true,
+      fontSize: 12,
+      textColor: "#FF0000",
+      horizontalAlign: "center",
+    }),
   };
 }
 
@@ -313,6 +404,12 @@ export function createEmptyEngineDynamicColumnConfig(): EngineDynamicColumnConfi
     valueField: "",
     namePrefix: "",
     nameSuffix: "",
+  };
+}
+
+export function createEmptyEngineDynamicGroupAggregateConfig(): EngineDynamicGroupAggregateConfig {
+  return {
+    sourceFieldId: "",
   };
 }
 
@@ -369,6 +466,7 @@ export function createEmptyEngineRuleOutputField(): EngineRuleOutputField {
     fallbackConfig: createEmptyEngineOutputFallbackConfig(),
     textAggregateConfig: createEmptyEngineTextAggregateConfig(),
     dynamicColumnConfig: createEmptyEngineDynamicColumnConfig(),
+    dynamicGroupAggregateConfig: createEmptyEngineDynamicGroupAggregateConfig(),
     emptyValuePolicy: "empty",
     defaultValue: "",
     dateOutputFormat: "YYYY/M/D",
@@ -382,6 +480,9 @@ export function createEmptyEngineSheetConfig(): EngineSheetConfig {
     splitSourceTableId: "",
     splitField: "",
     sheetNameTemplate: "",
+    sheetValueFilterMode: "none",
+    sheetValueFilterValuesText: "",
+    sheetValueFilterMappingGroupId: "",
   };
 }
 
@@ -390,7 +491,16 @@ export function createEmptyEngineTotalRowConfig(): EngineTotalRowConfig {
     enabled: false,
     label: "",
     labelField: "",
-    sumFields: [],
+    fieldConfigs: [],
+  };
+}
+
+export function createEmptyEngineTotalRowFieldConfig(): EngineTotalRowFieldConfig {
+  return {
+    id: crypto.randomUUID(),
+    fieldName: "",
+    aggregateMode: "sum",
+    fixedValue: "",
   };
 }
 
@@ -439,6 +549,7 @@ export function createEmptyEngineRuleDefinition(): EngineRuleDefinition {
     relations: [],
     result: createEmptyEngineRuleResultConfig(),
     sheetTemplate: createEmptyEngineSheetTemplate(),
+    styleConfig: createEmptyEngineRuleStyleConfig(),
     outputFields: [createEmptyEngineRuleOutputField()],
     createdAt: now,
     updatedAt: now,

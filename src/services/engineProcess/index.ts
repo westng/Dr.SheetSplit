@@ -5,6 +5,7 @@ import type {
   EngineRuleDefinition,
   EngineRuleOutputField,
   EngineSourceFilter,
+  EngineTotalRowFieldConfig,
 } from "../../types/engineRule";
 import {
   buildSheetPreview,
@@ -18,6 +19,7 @@ type MappingGroupEntry = {
 
 type MappingGroup = {
   id: string;
+  name?: string;
   entries: readonly MappingGroupEntry[];
 };
 
@@ -226,6 +228,47 @@ function resolveMappingValue(
   return mappingIndexes[mappingGroupId]?.[sourceValue] ?? UNKNOWN_FALLBACK;
 }
 
+function resolveBaselineMappingValue(
+  mappingIndexes: MappingIndexes,
+  mappingGroups: readonly MappingGroup[],
+  mappingGroupId: string,
+  baselineValue: string,
+): string {
+  const normalizedBaseline = asText(baselineValue);
+  if (!normalizedBaseline) {
+    return "";
+  }
+
+  const exactValue = mappingIndexes[mappingGroupId]?.[normalizedBaseline];
+  if (exactValue) {
+    return exactValue;
+  }
+
+  const group = mappingGroups.find((item) => item.id === mappingGroupId);
+  if (!group) {
+    return UNKNOWN_FALLBACK;
+  }
+
+  const prefix = `${normalizedBaseline}+`;
+  const matchedTargets = Array.from(
+    new Set(
+      group.entries
+        .filter((entry) => {
+          const source = asText(entry.source);
+          return source === normalizedBaseline || source.startsWith(prefix);
+        })
+        .map((entry) => asText(entry.target))
+        .filter(Boolean),
+    ),
+  );
+
+  if (matchedTargets.length === 1) {
+    return matchedTargets[0] ?? "";
+  }
+
+  return UNKNOWN_FALLBACK;
+}
+
 function resolveMultiMappingValue(
   mappingIndexes: MappingIndexes,
   mappingGroupId: string,
@@ -391,6 +434,18 @@ function joinSources(
         return;
       }
 
+      if (relation.multiMatchStrategy === "all" && matches.length > 1) {
+        matches.forEach((matchedRow) => {
+          nextRows.push({
+            sourceRows: {
+              ...record.sourceRows,
+              [relation.rightSourceId]: matchedRow,
+            },
+          });
+        });
+        return;
+      }
+
       nextRows.push({
         sourceRows: {
           ...record.sourceRows,
@@ -489,6 +544,21 @@ function resolveCompletionBaselineValues(
     return [];
   }
   return Array.from(new Set(source.rows.map((row) => asText(row[config.sourceField])).filter(Boolean)));
+}
+
+function resolveSheetValueExclusions(
+  rule: EngineRuleDefinition,
+  mappingGroups: readonly MappingGroup[],
+): Set<string> {
+  const config = rule.result.sheetConfig;
+  if (config.sheetValueFilterMode === "exclude_manual") {
+    return new Set(parseManualValues(config.sheetValueFilterValuesText));
+  }
+  if (config.sheetValueFilterMode === "exclude_mapping_source") {
+    const group = mappingGroups.find((item) => item.id === config.sheetValueFilterMappingGroupId);
+    return new Set((group?.entries ?? []).map((entry) => asText(entry.source)).filter(Boolean));
+  }
+  return new Set();
 }
 
 function applyRowCompletion(
@@ -662,6 +732,27 @@ function getExpressionNumber(value: unknown): number {
   return parseNumber(text, "表达式");
 }
 
+function resolveDynamicGroupAggregateValue(
+  field: EngineRuleOutputField,
+  outputValues: Record<string, string>,
+  dynamicHeaderConfigs: Map<string, DynamicHeaderConfig>,
+): string {
+  const sourceFieldId = asText(field.dynamicGroupAggregateConfig.sourceFieldId);
+  if (!sourceFieldId) {
+    return "";
+  }
+  const config = dynamicHeaderConfigs.get(sourceFieldId);
+  const headers = config?.headers ?? [];
+  if (headers.length === 0) {
+    return "";
+  }
+  const total = headers.reduce((sum, header) => sum + getExpressionNumber(outputValues[header]), 0);
+  if (field.valueMode === "dynamic_group_avg") {
+    return formatNumber(safeDivide(total, headers.length));
+  }
+  return formatNumber(total);
+}
+
 function safeDivide(numerator: number, denominator: number): number {
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || Math.abs(denominator) < 1e-9) {
     return 0;
@@ -701,6 +792,40 @@ function evaluateExpression(
     Array.from(new Set(valuesFor(fieldName))).join(asText(delimiter) || "\n");
   const count = (fieldName = ""): number => (fieldName ? valuesFor(fieldName).length : rows.length);
   const count_non_empty = (fieldName: string): number => valuesFor(fieldName).length;
+  const count_distinct = (fieldName: string): number => Array.from(new Set(valuesFor(fieldName))).length;
+  const sum_latest = (valueField: string, latestField: string): number => {
+    const normalizedLatestField = asText(latestField);
+    const normalizedValueField = asText(valueField);
+    if (!normalizedLatestField || !normalizedValueField || rows.length === 0) {
+      return 0;
+    }
+
+    const latestValue = rows.reduce((currentLatest, row) => {
+      const candidate = asText(row[normalizedLatestField]);
+      if (!candidate) {
+        return currentLatest;
+      }
+      if (!currentLatest) {
+        return candidate;
+      }
+      return compareMaybeNumber(candidate, currentLatest) > 0 ? candidate : currentLatest;
+    }, "");
+
+    if (!latestValue) {
+      return 0;
+    }
+
+    return rows.reduce((total, row) => {
+      if (asText(row[normalizedLatestField]) !== latestValue) {
+        return total;
+      }
+      const rawValue = asText(row[normalizedValueField]);
+      if (!rawValue) {
+        return total;
+      }
+      return total + parseNumber(rawValue, normalizedValueField);
+    }, 0);
+  };
   const sum_divide = (numeratorField: string, denominatorField: string): number =>
     safeDivide(sum(numeratorField), num(denominatorField));
   const sum_divide_sum = (numeratorField: string, denominatorField: string): number =>
@@ -727,6 +852,8 @@ function evaluateExpression(
       "join_unique",
       "count",
       "count_non_empty",
+      "count_distinct",
+      "sum_latest",
       "sum_divide",
       "sum_divide_sum",
       "coalesce",
@@ -743,6 +870,8 @@ function evaluateExpression(
       join_unique,
       count,
       count_non_empty,
+      count_distinct,
+      sum_latest,
       sum_divide,
       sum_divide_sum,
       coalesce,
@@ -761,6 +890,7 @@ function resolveFillValue(
   bucket: ResultBucket,
   field: EngineRuleOutputField,
   mappingIndexes: MappingIndexes,
+  mappingGroups: readonly MappingGroup[],
 ): string {
   if (!field.fillConfig.enabled) {
     return "";
@@ -768,7 +898,7 @@ function resolveFillValue(
   const baselineField = asText(field.fillConfig.baselineField);
   const baselineValue = asText(bucket.dimensionValues[baselineField] ?? bucket.outputValues[baselineField]);
   if (field.fillConfig.mappingGroupId) {
-    return resolveMappingValue(mappingIndexes, field.fillConfig.mappingGroupId, baselineValue);
+    return resolveBaselineMappingValue(mappingIndexes, mappingGroups, field.fillConfig.mappingGroupId, baselineValue);
   }
   if (asText(field.fillConfig.constantValue)) {
     return asText(field.fillConfig.constantValue);
@@ -783,6 +913,7 @@ function resolveFallbackValue(
   bucket: ResultBucket,
   field: EngineRuleOutputField,
   mappingIndexes: MappingIndexes,
+  mappingGroups: readonly MappingGroup[],
 ): string {
   if (!field.fallbackConfig.enabled) {
     return "";
@@ -801,7 +932,7 @@ function resolveFallbackValue(
     return baselineValue;
   }
   if (field.fallbackConfig.mode === "mapping") {
-    return resolveMappingValue(mappingIndexes, field.fallbackConfig.mappingGroupId, baselineValue);
+    return resolveBaselineMappingValue(mappingIndexes, mappingGroups, field.fallbackConfig.mappingGroupId, baselineValue);
   }
   return "";
 }
@@ -810,6 +941,7 @@ function resolveScalarOutputValue(
   bucket: ResultBucket,
   field: EngineRuleOutputField,
   mappingIndexes: MappingIndexes,
+  mappingGroups: readonly MappingGroup[],
 ): string {
   if (field.valueMode === "constant") {
     return applyEmptyValuePolicy(field, asText(field.constantValue));
@@ -853,7 +985,7 @@ function resolveScalarOutputValue(
         ? resolveMultiMappingValue(mappingIndexes, field.mappingGroupId, sourceValues)
         : resolveMappingValue(mappingIndexes, field.mappingGroupId, sourceValues[0] ?? "");
       if ((!asText(value) || value === UNKNOWN_FALLBACK) && field.fillConfig.enabled) {
-        value = resolveFillValue(bucket, field, mappingIndexes);
+        value = resolveFillValue(bucket, field, mappingIndexes, mappingGroups);
       }
       break;
     }
@@ -861,7 +993,7 @@ function resolveScalarOutputValue(
       value = evaluateExpression(field.expressionText, matchedRows, firstRow, bucket.outputValues);
       break;
     case "fill":
-      value = resolveFillValue(bucket, field, mappingIndexes);
+      value = resolveFillValue(bucket, field, mappingIndexes, mappingGroups);
       break;
     case "text_aggregate":
       value = aggregateText(matchedRows, field);
@@ -872,7 +1004,7 @@ function resolveScalarOutputValue(
   }
 
   if (!asText(value) || value === UNKNOWN_FALLBACK) {
-    const fallbackValue = resolveFallbackValue(bucket, field, mappingIndexes);
+    const fallbackValue = resolveFallbackValue(bucket, field, mappingIndexes, mappingGroups);
     if (asText(fallbackValue) || field.fallbackConfig.enabled) {
       value = fallbackValue;
     }
@@ -906,6 +1038,24 @@ function resolveOutputFieldHeaderName(
     return evaluateExpression(field.nameExpressionText, sourceRow ? [sourceRow] : [], sourceRow, {}) || asText(field.fieldName) || "未命名字段";
   }
   return asText(field.fieldName) || "未命名字段";
+}
+
+function resolveOutputFieldSelectionLabel(
+  field: EngineRuleOutputField,
+  index: number,
+  mappingGroups: readonly MappingGroup[],
+): string {
+  if (field.nameMode === "source_field") {
+    return field.nameSourceField.trim() ? `{{${field.nameSourceField.trim()}}}` : `字段_${index + 1}`;
+  }
+  if (field.nameMode === "mapping") {
+    const mappingName = mappingGroups.find((item) => item.id === field.nameMappingGroupId)?.name ?? "";
+    return asText(mappingName) || `字段_${index + 1}`;
+  }
+  if (field.nameMode === "expression") {
+    return field.nameExpressionText.trim() ? `=${field.nameExpressionText.trim()}` : `字段_${index + 1}`;
+  }
+  return asText(field.fieldName) || `字段_${index + 1}`;
 }
 
 function buildDynamicHeaderConfig(
@@ -998,7 +1148,7 @@ function appendTotalRow(
   headers: string[],
   rows: string[][],
   rule: EngineRuleDefinition,
-  dynamicHeaderGroups: Record<string, string[]>,
+  totalFieldGroups: Record<string, string[]>,
 ): string[][] {
   if (!rule.result.totalRow.enabled || headers.length === 0) {
     return rows;
@@ -1008,47 +1158,66 @@ function appendTotalRow(
   const totalRow = new Array<string>(headers.length).fill("");
   const label = asText(rule.result.totalRow.label) || "总计";
   const labelField = asText(rule.result.totalRow.labelField);
-  if (labelField && headerIndexMap.has(labelField)) {
-    totalRow[headerIndexMap.get(labelField) ?? 0] = label;
+  const labelCandidates = labelField ? [labelField, ...(totalFieldGroups[labelField] ?? [])] : [];
+  const resolvedLabelField = labelCandidates.find((field) => headerIndexMap.has(field));
+  if (resolvedLabelField && headerIndexMap.has(resolvedLabelField)) {
+    totalRow[headerIndexMap.get(resolvedLabelField) ?? 0] = label;
   } else {
     totalRow[0] = label;
   }
 
-  const sumFields = new Set<string>();
-  rule.result.totalRow.sumFields.forEach((field) => {
-    if (headerIndexMap.has(field)) {
-      sumFields.add(field);
-      return;
+  const resolveTargetFields = (fieldName: string): string[] => {
+    if (headerIndexMap.has(fieldName)) {
+      return [fieldName];
     }
-    (dynamicHeaderGroups[field] ?? []).forEach((dynamicField) => {
-      if (headerIndexMap.has(dynamicField)) {
-        sumFields.add(dynamicField);
-      }
-    });
-  });
+    return (totalFieldGroups[fieldName] ?? []).filter((candidateField) => headerIndexMap.has(candidateField));
+  };
 
-  sumFields.forEach((field) => {
-    const columnIndex = headerIndexMap.get(field);
-    if (columnIndex == null) {
-      return;
+  const aggregateColumnValue = (columnIndex: number, config: EngineTotalRowFieldConfig): string => {
+    if (config.aggregateMode === "fixed") {
+      return asText(config.fixedValue);
     }
+
+    const values = rows.map((row) => asText(row[columnIndex])).filter(Boolean);
+    if (values.length === 0) {
+      return "";
+    }
+
+    if (config.aggregateMode === "single_first") {
+      return values[0] ?? "";
+    }
+    if (config.aggregateMode === "single_last") {
+      return values[values.length - 1] ?? "";
+    }
+
     let total = 0;
-    let hasNumeric = false;
-    rows.forEach((row) => {
-      const cellValue = asText(row[columnIndex]);
-      if (!cellValue) {
-        return;
-      }
+    let count = 0;
+    values.forEach((cellValue) => {
       const parsed = Number(cellValue.replace(/,/g, ""));
       if (!Number.isFinite(parsed)) {
         return;
       }
       total += parsed;
-      hasNumeric = true;
+      count += 1;
     });
-    if (hasNumeric) {
-      totalRow[columnIndex] = formatNumber(total);
+
+    if (count === 0) {
+      return "";
     }
+    if (config.aggregateMode === "avg") {
+      return formatNumber(total / count);
+    }
+    return formatNumber(total);
+  };
+
+  rule.result.totalRow.fieldConfigs.forEach((config) => {
+    resolveTargetFields(config.fieldName).forEach((field) => {
+    const columnIndex = headerIndexMap.get(field);
+    if (columnIndex == null) {
+      return;
+    }
+      totalRow[columnIndex] = aggregateColumnValue(columnIndex, config);
+    });
   });
 
   return [...rows, totalRow];
@@ -1070,21 +1239,27 @@ function buildEngineOutput(
     .map((field) => field.label);
   const sourceOrder = input.rule.sources.map((source) => source.id);
   const baselineValues = resolveCompletionBaselineValues(input.rule, loadedSources, input.mappingGroups);
+  const excludedSheetValues = resolveSheetValueExclusions(input.rule, input.mappingGroups);
 
   const sheetBuckets = new Map<string, WorkingRecord[]>();
   workingRows.forEach((record) => {
     const dimensionValues = buildDimensionValues(input.rule, record);
     let rawSheetName = "Sheet1";
+    let splitValue = "";
     if (input.rule.result.sheetConfig.mode === "split_field") {
       if (input.rule.result.sheetConfig.splitFieldScope === "result_field") {
-        rawSheetName = asText(dimensionValues[input.rule.result.sheetConfig.splitField]) || "未命名Sheet";
+        splitValue = asText(dimensionValues[input.rule.result.sheetConfig.splitField]);
       } else {
-        rawSheetName = resolveSourceValue(
+        splitValue = resolveSourceValue(
           record,
           input.rule.result.sheetConfig.splitSourceTableId,
           input.rule.result.sheetConfig.splitField,
-        ) || "未命名Sheet";
+        );
       }
+      if (splitValue && excludedSheetValues.has(splitValue)) {
+        return;
+      }
+      rawSheetName = splitValue || "未命名Sheet";
       if (input.rule.result.sheetConfig.sheetNameTemplate.trim()) {
         rawSheetName = renderTemplate(input.rule.result.sheetConfig.sheetNameTemplate, dimensionValues) || rawSheetName;
       }
@@ -1141,23 +1316,27 @@ function buildEngineOutput(
     });
 
     const headerSeeds = [...visibleDimensionLabels];
-    const dynamicHeaderGroups: Record<string, string[]> = {};
-    input.rule.outputFields.forEach((field) => {
+    const totalFieldGroups: Record<string, string[]> = {};
+    input.rule.outputFields.forEach((field, index) => {
       const baseLabel = outputFieldLabelMap.get(field.id) ?? (field.fieldName || "未命名字段");
+      const selectionLabel = resolveOutputFieldSelectionLabel(field, index, input.mappingGroups);
       if (field.valueMode === "dynamic_columns" && field.dynamicColumnConfig.enabled) {
         const config = dynamicHeaderConfigs.get(field.id);
         const headers = config?.headers ?? [];
-        dynamicHeaderGroups[baseLabel] = headers;
+        totalFieldGroups[baseLabel] = headers;
+        totalFieldGroups[selectionLabel] = headers;
         headerSeeds.push(...headers);
         return;
       }
+      totalFieldGroups[baseLabel] = [baseLabel];
+      totalFieldGroups[selectionLabel] = [baseLabel];
       headerSeeds.push(baseLabel);
     });
 
     const { headers } = buildUniqueHeaders(headerSeeds);
-    const finalDynamicHeaderGroups: Record<string, string[]> = {};
-    Object.entries(dynamicHeaderGroups).forEach(([baseLabel, values]) => {
-      finalDynamicHeaderGroups[baseLabel] = values.map((header) => {
+    const finalTotalFieldGroups: Record<string, string[]> = {};
+    Object.entries(totalFieldGroups).forEach(([groupName, values]) => {
+      finalTotalFieldGroups[groupName] = values.map((header) => {
         const directHit = headers.find((item) => item === header);
         return directHit ?? header;
       });
@@ -1165,43 +1344,89 @@ function buildEngineOutput(
 
     resultBuckets.forEach((bucket) => {
       const outputValues: Record<string, string> = {};
-      input.rule.outputFields.forEach((field) => {
-        const baseLabel = outputFieldLabelMap.get(field.id) ?? (field.fieldName || "未命名字段");
-        if (field.valueMode === "dynamic_columns" && field.dynamicColumnConfig.enabled) {
-          const config = dynamicHeaderConfigs.get(field.id);
-          (config?.headers ?? []).forEach((dynamicHeader) => {
-            outputValues[dynamicHeader] = "";
-          });
-          const matchedRows = extractMatchedSourceRows(bucket, field);
-          const totals = new Map<string, number>();
-          const hasNumber = new Set<string>();
-          matchedRows.forEach((row) => {
-            const rawKey = asText(row[field.dynamicColumnConfig.columnField]);
-            if (!rawKey) {
-              return;
+      const maxPasses = Math.max(input.rule.outputFields.length, 1);
+      for (let passIndex = 0; passIndex < maxPasses; passIndex += 1) {
+        let changed = false;
+        input.rule.outputFields.forEach((field, index) => {
+          const baseLabel = outputFieldLabelMap.get(field.id) ?? (field.fieldName || "未命名字段");
+          const selectionLabel = resolveOutputFieldSelectionLabel(field, index, input.mappingGroups);
+          if (field.valueMode === "dynamic_columns" && field.dynamicColumnConfig.enabled) {
+            const config = dynamicHeaderConfigs.get(field.id);
+            (config?.headers ?? []).forEach((dynamicHeader) => {
+              if (!(dynamicHeader in outputValues)) {
+                outputValues[dynamicHeader] = "";
+                changed = true;
+              }
+            });
+            const matchedRows = extractMatchedSourceRows(bucket, field);
+            const totals = new Map<string, number>();
+            const hasNumber = new Set<string>();
+            matchedRows.forEach((row) => {
+              const rawKey = asText(row[field.dynamicColumnConfig.columnField]);
+              if (!rawKey) {
+                return;
+              }
+              const dynamicHeader = config?.headerMap[rawKey];
+              if (!dynamicHeader) {
+                return;
+              }
+              const rawValue = row[field.dynamicColumnConfig.valueField];
+              const normalizedValue = asText(rawValue);
+              if (!normalizedValue || normalizedValue === UNKNOWN_FALLBACK || normalizedValue === "-" || normalizedValue === "未知错误填充") {
+                return;
+              }
+              const nextValue = parseNumber(rawValue, field.dynamicColumnConfig.valueField);
+              totals.set(dynamicHeader, (totals.get(dynamicHeader) ?? 0) + nextValue);
+              hasNumber.add(dynamicHeader);
+            });
+            Array.from(totals.entries()).forEach(([dynamicHeader, total]) => {
+              if (hasNumber.has(dynamicHeader)) {
+                const nextValue = formatNumber(total);
+                if (outputValues[dynamicHeader] !== nextValue) {
+                  outputValues[dynamicHeader] = nextValue;
+                  changed = true;
+                }
+              }
+            });
+            totalFieldGroups[baseLabel] = config?.headers ?? [];
+            totalFieldGroups[selectionLabel] = config?.headers ?? [];
+            return;
+          }
+          if (field.valueMode === "dynamic_group_sum" || field.valueMode === "dynamic_group_avg") {
+            let nextValue = resolveDynamicGroupAggregateValue(field, outputValues, dynamicHeaderConfigs);
+            if (!asText(nextValue) || nextValue === UNKNOWN_FALLBACK) {
+              const fallbackValue = resolveFallbackValue(
+                { ...bucket, outputValues: { ...bucket.outputValues, ...outputValues } },
+                field,
+                mappingIndexes,
+                input.mappingGroups,
+              );
+              if (asText(fallbackValue) || field.fallbackConfig.enabled) {
+                nextValue = fallbackValue;
+              }
             }
-            const dynamicHeader = config?.headerMap[rawKey];
-            if (!dynamicHeader) {
-              return;
+            nextValue = finalizeOutputValue(field, nextValue);
+            if (outputValues[baseLabel] !== nextValue) {
+              outputValues[baseLabel] = nextValue;
+              changed = true;
             }
-            const nextValue = parseNumber(row[field.dynamicColumnConfig.valueField], field.dynamicColumnConfig.valueField);
-            totals.set(dynamicHeader, (totals.get(dynamicHeader) ?? 0) + nextValue);
-            hasNumber.add(dynamicHeader);
-          });
-          Array.from(totals.entries()).forEach(([dynamicHeader, total]) => {
-            if (hasNumber.has(dynamicHeader)) {
-              outputValues[dynamicHeader] = formatNumber(total);
-            }
-          });
-          dynamicHeaderGroups[baseLabel] = config?.headers ?? [];
-          return;
+            return;
+          }
+          const nextValue = resolveScalarOutputValue(
+            { ...bucket, outputValues: { ...bucket.outputValues, ...outputValues } },
+            field,
+            mappingIndexes,
+            input.mappingGroups,
+          );
+          if (outputValues[baseLabel] !== nextValue) {
+            outputValues[baseLabel] = nextValue;
+            changed = true;
+          }
+        });
+        if (!changed) {
+          break;
         }
-        outputValues[baseLabel] = resolveScalarOutputValue(
-          { ...bucket, outputValues: { ...bucket.outputValues, ...outputValues } },
-          field,
-          mappingIndexes,
-        );
-      });
+      }
       bucket.outputValues = outputValues;
       bucket.rowValues = headers.map((header) => {
         if (header in bucket.dimensionValues && visibleDimensionLabels.includes(header)) {
@@ -1224,7 +1449,7 @@ function buildEngineOutput(
     });
 
     let rowMatrix = resultBuckets.map((bucket) => bucket.rowValues);
-    rowMatrix = appendTotalRow(headers, rowMatrix, input.rule, finalDynamicHeaderGroups);
+    rowMatrix = appendTotalRow(headers, rowMatrix, input.rule, finalTotalFieldGroups);
 
     const titleValues: Record<string, string[]> = {};
     resultBuckets.forEach((bucket) => {
@@ -1267,6 +1492,7 @@ function buildEngineOutput(
       name: sheetName,
       title: sheetTitle,
       titleEnabled: input.rule.sheetTemplate.titleEnabled,
+      totalRowEnabled: input.rule.result.totalRow.enabled,
       groupHeaderEnabled: false,
       groupHeaderLabel: "",
       groupHeaderStartColumnIndex: 0,
@@ -1275,6 +1501,7 @@ function buildEngineOutput(
       reservedFooterRows: 0,
       headers,
       rows: rowMatrix,
+      styleConfig: JSON.parse(JSON.stringify(input.rule.styleConfig)),
     });
   }
 
