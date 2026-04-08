@@ -59,13 +59,60 @@ export type EngineProcessTaskResult = {
 
 type SourceRow = Record<string, string>;
 
-type LoadedSource = {
+export type EngineProcessLoadedSource = {
   id: string;
   fileName: string;
   sheetName: string;
   headers: string[];
   rows: SourceRow[];
 };
+
+export type EngineProcessComputationInput = {
+  rule: EngineRuleDefinition;
+  loadedSources: Record<string, EngineProcessLoadedSource>;
+  mappingGroups: readonly MappingGroup[];
+};
+
+type EngineProcessWorkerRequest = {
+  input: EngineProcessComputationInput;
+};
+
+type EngineProcessWorkerSuccess = {
+  ok: true;
+  engineOutput: EngineOutput;
+};
+
+type EngineProcessWorkerFailure = {
+  ok: false;
+  error: string;
+};
+
+type EngineProcessWorkerProgress = {
+  ok: null;
+  stage?: EngineProcessTaskStage;
+  log?: {
+    message: string;
+    level: "info" | "success" | "error";
+  };
+};
+
+let workerInstance: Worker | null = null;
+
+function toWorkerSerializable<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function getWorker(): Worker | null {
+  if (typeof Worker === "undefined") {
+    return null;
+  }
+  if (!workerInstance) {
+    workerInstance = new Worker(new URL("./engineProcess.worker.ts", import.meta.url), {
+      type: "module",
+    });
+  }
+  return workerInstance;
+}
 
 type WorkingRecord = {
   sourceRows: Record<string, SourceRow | null | undefined>;
@@ -323,9 +370,9 @@ function log(
 async function loadSources(
   input: EngineProcessTaskInput,
   options: EngineProcessTaskOptions,
-): Promise<Record<string, LoadedSource>> {
+): Promise<Record<string, EngineProcessLoadedSource>> {
   options.onStage?.("load_sources");
-  const result: Record<string, LoadedSource> = {};
+  const result: Record<string, EngineProcessLoadedSource> = {};
 
   for (const source of input.rule.sources) {
     const runtimeSource = input.sources.find((item) => item.sourceId === source.id);
@@ -363,7 +410,7 @@ function createWorkingRecords(rows: SourceRow[], sourceId: string): WorkingRecor
 
 function joinSources(
   rule: EngineRuleDefinition,
-  loadedSources: Record<string, LoadedSource>,
+  loadedSources: Record<string, EngineProcessLoadedSource>,
   options: EngineProcessTaskOptions,
 ): WorkingRecord[] {
   options.onStage?.("join_sources");
@@ -516,7 +563,7 @@ function parseManualValues(text: string): string[] {
 
 function resolveCompletionBaselineValues(
   rule: EngineRuleDefinition,
-  loadedSources: Record<string, LoadedSource>,
+  loadedSources: Record<string, EngineProcessLoadedSource>,
   mappingGroups: readonly MappingGroup[],
 ): string[] {
   const config = rule.result.rowCompletion;
@@ -1156,14 +1203,19 @@ function appendTotalRow(
 
   const headerIndexMap = new Map(headers.map((header, index) => [header, index]));
   const totalRow = new Array<string>(headers.length).fill("");
+  const totalRowOutputValues: Record<string, string> = {};
   const label = asText(rule.result.totalRow.label) || "总计";
   const labelField = asText(rule.result.totalRow.labelField);
   const labelCandidates = labelField ? [labelField, ...(totalFieldGroups[labelField] ?? [])] : [];
   const resolvedLabelField = labelCandidates.find((field) => headerIndexMap.has(field));
   if (resolvedLabelField && headerIndexMap.has(resolvedLabelField)) {
     totalRow[headerIndexMap.get(resolvedLabelField) ?? 0] = label;
+    totalRowOutputValues[resolvedLabelField] = label;
   } else {
     totalRow[0] = label;
+    if (headers[0]) {
+      totalRowOutputValues[headers[0]] = label;
+    }
   }
 
   const resolveTargetFields = (fieldName: string): string[] => {
@@ -1176,6 +1228,9 @@ function appendTotalRow(
   const aggregateColumnValue = (columnIndex: number, config: EngineTotalRowFieldConfig): string => {
     if (config.aggregateMode === "fixed") {
       return asText(config.fixedValue);
+    }
+    if (config.aggregateMode === "expression") {
+      return evaluateExpression(config.expressionText, [], {}, totalRowOutputValues);
     }
 
     const values = rows.map((row) => asText(row[columnIndex])).filter(Boolean);
@@ -1212,11 +1267,12 @@ function appendTotalRow(
 
   rule.result.totalRow.fieldConfigs.forEach((config) => {
     resolveTargetFields(config.fieldName).forEach((field) => {
-    const columnIndex = headerIndexMap.get(field);
-    if (columnIndex == null) {
-      return;
-    }
+      const columnIndex = headerIndexMap.get(field);
+      if (columnIndex == null) {
+        return;
+      }
       totalRow[columnIndex] = aggregateColumnValue(columnIndex, config);
+      totalRowOutputValues[field] = totalRow[columnIndex] ?? "";
     });
   });
 
@@ -1224,8 +1280,8 @@ function appendTotalRow(
 }
 
 function buildEngineOutput(
-  input: EngineProcessTaskInput,
-  loadedSources: Record<string, LoadedSource>,
+  input: Pick<EngineProcessTaskInput, "rule" | "mappingGroups">,
+  loadedSources: Record<string, EngineProcessLoadedSource>,
   workingRows: WorkingRecord[],
   mappingIndexes: MappingIndexes,
   options: EngineProcessTaskOptions,
@@ -1514,14 +1570,86 @@ function buildEngineOutput(
   };
 }
 
+export function runEngineProcessComputation(
+  input: EngineProcessComputationInput,
+  options: EngineProcessTaskOptions = {},
+): EngineOutput {
+  const mappingIndexes = buildMappingIndexes(input.mappingGroups);
+  const workingRows = joinSources(input.rule, input.loadedSources, options);
+  return buildEngineOutput(
+    {
+      rule: input.rule,
+      mappingGroups: input.mappingGroups,
+    },
+    input.loadedSources,
+    workingRows,
+    mappingIndexes,
+    options,
+  );
+}
+
+async function computeEngineOutput(
+  input: EngineProcessComputationInput,
+  options: EngineProcessTaskOptions,
+): Promise<EngineOutput> {
+  const worker = getWorker();
+  const workerInput = toWorkerSerializable(input);
+  if (!worker) {
+    return runEngineProcessComputation(workerInput, options);
+  }
+
+  return new Promise<EngineOutput>((resolve, reject) => {
+    const handleMessage = (
+      event: MessageEvent<EngineProcessWorkerSuccess | EngineProcessWorkerFailure | EngineProcessWorkerProgress>,
+    ) => {
+      if (event.data.ok === null) {
+        if (event.data.stage) {
+          options.onStage?.(event.data.stage);
+        }
+        if (event.data.log) {
+          options.onLog?.(event.data.log.message, event.data.log.level);
+        }
+        return;
+      }
+
+      worker.removeEventListener("message", handleMessage);
+      worker.removeEventListener("error", handleError);
+
+      if (!event.data.ok) {
+        reject(new Error(event.data.error || "结果构建失败。"));
+        return;
+      }
+
+      resolve(event.data.engineOutput);
+    };
+
+    const handleError = (event: ErrorEvent) => {
+      worker.removeEventListener("message", handleMessage);
+      worker.removeEventListener("error", handleError);
+      reject(new Error(event.message || "结果构建失败。"));
+    };
+
+    worker.addEventListener("message", handleMessage);
+    worker.addEventListener("error", handleError);
+    worker.postMessage({
+      input: workerInput,
+    } satisfies EngineProcessWorkerRequest);
+  });
+}
+
 export async function runEngineProcessTask(
   input: EngineProcessTaskInput,
   options: EngineProcessTaskOptions = {},
 ): Promise<EngineProcessTaskResult> {
-  const mappingIndexes = buildMappingIndexes(input.mappingGroups);
   const loadedSources = await loadSources(input, options);
-  const workingRows = joinSources(input.rule, loadedSources, options);
-  const engineOutput = buildEngineOutput(input, loadedSources, workingRows, mappingIndexes, options);
+  const engineOutput = await computeEngineOutput(
+    {
+      rule: input.rule,
+      loadedSources,
+      mappingGroups: input.mappingGroups,
+    },
+    options,
+  );
 
   options.onStage?.("build_workbook");
   log(options, "正在生成输出工作簿...");

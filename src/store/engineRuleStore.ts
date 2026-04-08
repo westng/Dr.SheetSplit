@@ -211,7 +211,13 @@ function normalizeStyleHorizontalAlign(value: unknown): EngineStyleHorizontalAli
 }
 
 function normalizeTotalRowAggregateMode(value: unknown): EngineTotalRowAggregateMode {
-  if (value === "avg" || value === "single_first" || value === "single_last" || value === "fixed") {
+  if (
+    value === "avg" ||
+    value === "single_first" ||
+    value === "single_last" ||
+    value === "fixed" ||
+    value === "expression"
+  ) {
     return value;
   }
   return "sum";
@@ -355,6 +361,7 @@ function normalizeTotalRowFieldConfig(value: unknown): EngineTotalRowFieldConfig
     fieldName: String(input.fieldName ?? "").trim(),
     aggregateMode: normalizeTotalRowAggregateMode(input.aggregateMode),
     fixedValue: String(input.fixedValue ?? ""),
+    expressionText: String(input.expressionText ?? ""),
   };
 }
 

@@ -340,6 +340,7 @@ export default {
       single_first: "单值（第一条）",
       single_last: "单值（最后一条）",
       fixed: "固定值",
+      expression: "表达式",
     },
     sheetValueFilterModes: {
       none: "不过滤",
@@ -450,6 +451,10 @@ export default {
       totalRowHint: "这里配置合计行的标签、标签字段，以及每个字段的聚合方式。",
       totalRowFieldConfigsHint: "请至少新增 1 条合计字段规则。",
       totalRowFixedValuePlaceholder: "请输入固定值",
+      expressionPlaceholder:
+        '示例：sum("采购数量") / sum("采购规格")；或 output("总计") * output("单价")',
+      expressionHint:
+        '可用函数：sum/avg/first/num/output/join/join_unique/count/count_non_empty/count_distinct。来源字段与产出字段都要加引号；引用产出字段时请把当前行放在被引用字段之后。',
       styleHint: "这里统一配置导出工作簿的标题行、表头、数据区和总计行样式。",
       availableFields: "当前来源表可用字段",
       noAvailableFields: "未配置",
@@ -537,6 +542,7 @@ export default {
       totalRowLabelRequired: "合计行标签不能为空。",
       totalRowSumFieldsRequired: "启用合计行后，至少配置 1 个合计字段规则。",
       totalRowFieldRequired: "合计字段规则 #{row} 需要选择字段。",
+      totalRowExpressionRequired: "合计字段规则 #{row} 的“表达式”不能为空。",
     },
   },
   mapping: {

@@ -324,6 +324,9 @@ export function validateEngineRuleDraft(rule: EngineRuleDefinition): EngineRuleV
       if (!hasText(config.fieldName)) {
         errors.push(t("engineRules.validation.totalRowFieldRequired", { row }));
       }
+      if (config.aggregateMode === "expression" && !hasText(config.expressionText)) {
+        errors.push(t("engineRules.validation.totalRowExpressionRequired", { row }));
+      }
     });
   }
 

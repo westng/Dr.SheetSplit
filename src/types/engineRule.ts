@@ -12,7 +12,7 @@ export type EngineResultCompletionMappingValueType = "source" | "target";
 export type EngineTextAggregateDelimiterMode = "newline" | "comma" | "custom";
 export type EngineOutputFallbackMode = "empty" | "constant" | "baseline" | "mapping";
 export type EngineStyleHorizontalAlign = "left" | "center" | "right";
-export type EngineTotalRowAggregateMode = "sum" | "avg" | "single_first" | "single_last" | "fixed";
+export type EngineTotalRowAggregateMode = "sum" | "avg" | "single_first" | "single_last" | "fixed" | "expression";
 export type EngineOutputValueMode =
   | "source"
   | "constant"
@@ -119,6 +119,7 @@ export type EngineTotalRowFieldConfig = {
   fieldName: string;
   aggregateMode: EngineTotalRowAggregateMode;
   fixedValue: string;
+  expressionText: string;
 };
 
 export type EngineResultCompletionConfig = {
@@ -265,6 +266,7 @@ export const ENGINE_TOTAL_ROW_AGGREGATE_MODES: EngineTotalRowAggregateMode[] = [
   "single_first",
   "single_last",
   "fixed",
+  "expression",
 ];
 export const ENGINE_OUTPUT_FALLBACK_MODES: EngineOutputFallbackMode[] = [
   "empty",
@@ -501,6 +503,7 @@ export function createEmptyEngineTotalRowFieldConfig(): EngineTotalRowFieldConfi
     fieldName: "",
     aggregateMode: "sum",
     fixedValue: "",
+    expressionText: "",
   };
 }
 

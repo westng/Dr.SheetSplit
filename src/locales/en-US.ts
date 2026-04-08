@@ -340,6 +340,7 @@ export default {
       single_first: "Single Value (First)",
       single_last: "Single Value (Last)",
       fixed: "Fixed Value",
+      expression: "Expression",
     },
     sheetValueFilterModes: {
       none: "No Filter",
@@ -451,6 +452,10 @@ export default {
       totalRowHint: "Configure the total row label, label field, and the aggregate mode for each field here.",
       totalRowFieldConfigsHint: "Add at least one total-row field rule.",
       totalRowFixedValuePlaceholder: "Enter a fixed value",
+      expressionPlaceholder:
+        'Example: sum("Purchase Qty") / sum("Pack Size"), or output("Total") * output("Unit Price")',
+      expressionHint:
+        'Available functions: sum/avg/first/num/output/join/join_unique/count/count_non_empty/count_distinct. Wrap source and output field names in quotes. When using output(), place this row after the referenced output fields.',
       styleHint: "Configure workbook styles for the title row, header, data area, and total row.",
       availableFields: "Available fields for this source",
       noAvailableFields: "Not configured",
@@ -541,6 +546,7 @@ export default {
       totalRowLabelRequired: "Total row label is required.",
       totalRowSumFieldsRequired: "Please configure at least one total-row field rule when total row is enabled.",
       totalRowFieldRequired: "Total-row field rule #{row}: field is required.",
+      totalRowExpressionRequired: "Total-row field rule #{row}: expression is required.",
     },
   },
   mapping: {

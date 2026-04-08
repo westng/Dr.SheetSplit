@@ -1212,6 +1212,9 @@ function handleTotalRowAggregateModeChange(config: EngineTotalRowFieldConfig): v
   if (config.aggregateMode !== "fixed") {
     config.fixedValue = "";
   }
+  if (config.aggregateMode !== "expression") {
+    config.expressionText = "";
+  }
 }
 
 function handleValueModeChange(field: EngineRuleOutputField): void {
@@ -3462,6 +3465,15 @@ onUnmounted(() => {
                           />
                         </label>
                       </div>
+                      <label v-if="config.aggregateMode === 'expression'" class="field-block">
+                        <span>{{ $t("engineRules.fields.expressionText") }}</span>
+                        <textarea
+                          v-model="config.expressionText"
+                          rows="3"
+                          :placeholder="$t('engineRules.messages.expressionPlaceholder')"
+                        />
+                        <p class="hint-text">{{ $t("engineRules.messages.expressionHint") }}</p>
+                      </label>
                       <div class="stack-card-actions">
                         <button type="button" class="text-btn danger" @click="removeTotalRowFieldConfig(config.id)">
                           {{ $t("engineRules.actions.remove") }}
