@@ -175,10 +175,11 @@ function formatNumber(value: number): string {
   if (!Number.isFinite(value)) {
     return "";
   }
-  if (Math.abs(value - Math.round(value)) < 1e-9) {
-    return String(Math.round(value));
+  const rounded = Number(value.toFixed(2));
+  if (Math.abs(rounded - Math.round(rounded)) < 1e-9) {
+    return String(Math.round(rounded));
   }
-  return value.toFixed(6).replace(/\.?0+$/, "");
+  return rounded.toFixed(2);
 }
 
 function parseDateParts(value: unknown): DateParts | null {
