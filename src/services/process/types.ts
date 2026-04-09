@@ -1,4 +1,5 @@
 import type { RuleDefinition } from "../../types/rule";
+import type { EngineRuleStyleConfig } from "../../types/engineRule";
 
 export type ProcessSheetInput = {
   name: string;
@@ -38,6 +39,7 @@ export type EngineSheetOutput = {
   name: string;
   title: string;
   titleEnabled: boolean;
+  totalRowEnabled?: boolean;
   groupHeaderEnabled: boolean;
   groupHeaderLabel: string;
   groupHeaderStartColumnIndex: number;
@@ -46,6 +48,7 @@ export type EngineSheetOutput = {
   reservedFooterRows: number;
   headers: string[];
   rows: string[][];
+  styleConfig?: EngineRuleStyleConfig;
 };
 
 export type EngineOutput = {
