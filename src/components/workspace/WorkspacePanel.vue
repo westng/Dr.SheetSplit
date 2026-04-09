@@ -11,9 +11,10 @@ import { useImportSettings } from "../../composables/useImportSettings";
 import { basenameFromPath } from "../../utils/nativeFile";
 import {
   buildSheetPreview,
+  inspectSpreadsheetPath,
   parseSpreadsheetFile,
-  parseSpreadsheetPath,
   readSpreadsheetSheetHeader,
+  readSpreadsheetSheetHeaderFromPath,
   type SpreadsheetPreview,
   type SpreadsheetSheetData,
   type SpreadsheetSheetPreview,
@@ -34,6 +35,7 @@ const sourcePreview = ref<SpreadsheetPreview | null>(null);
 const selectedSheetName = ref("");
 const selectedSheetData = ref<SpreadsheetSheetData | null>(null);
 const sourceFileName = ref("");
+const sourceFilePath = ref("");
 const isParsingSource = ref(false);
 const isDragOver = ref(false);
 const loadError = ref("");
@@ -308,6 +310,7 @@ async function processSourceFile(file: File): Promise<void> {
     sourcePreview.value = parsed;
     selectedSheetData.value = null;
     sourceFileName.value = parsed.fileName;
+    sourceFilePath.value = "";
     selectedSheetName.value = resolveInitialSheetName(parsed);
 
     if (parsed.sheets.length === 0) {
@@ -329,6 +332,7 @@ async function processSourceFile(file: File): Promise<void> {
     selectedSheetData.value = null;
     selectedSheetName.value = "";
     sourceFileName.value = "";
+    sourceFilePath.value = "";
     loadError.value = `${t("workspace.messages.loadFailed")} ${toErrorMessage(error)}`.trim();
     appendProcessLog(loadError.value, "error");
   } finally {
@@ -355,10 +359,11 @@ async function processSourcePath(filePath: string): Promise<void> {
   loadError.value = "";
 
   try {
-    const parsed = await parseSpreadsheetPath(normalizedPath);
+    const parsed = await inspectSpreadsheetPath(normalizedPath);
     sourcePreview.value = parsed;
     selectedSheetData.value = null;
     sourceFileName.value = parsed.fileName || basenameFromPath(normalizedPath);
+    sourceFilePath.value = normalizedPath;
     selectedSheetName.value = resolveInitialSheetName(parsed);
 
     if (parsed.sheets.length === 0) {
@@ -380,6 +385,7 @@ async function processSourcePath(filePath: string): Promise<void> {
     selectedSheetData.value = null;
     selectedSheetName.value = "";
     sourceFileName.value = basenameFromPath(normalizedPath);
+    sourceFilePath.value = "";
     loadError.value = `${t("workspace.messages.loadFailed")} ${toErrorMessage(error)}`.trim();
     appendProcessLog(loadError.value, "error");
   } finally {
@@ -503,6 +509,7 @@ async function handleStartProcess(): Promise<void> {
       rule: selectedRule.value,
       mappingGroups: [...mappingGroups.value],
       datasetId: sourcePreview.value.datasetId,
+      sourceFilePath: sourceFilePath.value,
       sourceSheetName: historySourceSheetName,
       sourceFileName: historySourceFileName,
       exportDirectory: resolveExportDirectory(),
@@ -594,9 +601,9 @@ onUnmounted(() => {
 });
 
 watch(
-  [() => sourcePreview.value?.datasetId ?? "", selectedSheetName, selectedRuleId],
-  async ([datasetId, sheetName, ruleId], _previous, onCleanup) => {
-    if (!datasetId || !sheetName || !ruleId) {
+  [() => sourcePreview.value?.datasetId ?? "", sourceFilePath, selectedSheetName, selectedRuleId],
+  async ([datasetId, filePath, sheetName, ruleId], _previous, onCleanup) => {
+    if ((!datasetId && !filePath) || !sheetName || !ruleId) {
       selectedSheetData.value = null;
       return;
     }
@@ -607,7 +614,9 @@ watch(
     });
 
     try {
-      const sheetData = await readSpreadsheetSheetHeader(datasetId, sheetName);
+      const sheetData = datasetId
+        ? await readSpreadsheetSheetHeader(datasetId, sheetName)
+        : await readSpreadsheetSheetHeaderFromPath(filePath, sheetName);
       if (!cancelled) {
         selectedSheetData.value = sheetData;
       }

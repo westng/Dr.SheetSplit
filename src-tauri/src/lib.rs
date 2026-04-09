@@ -306,6 +306,63 @@ fn run_python_transform_for_dataset(
     }
 }
 
+#[tauri::command]
+fn run_python_transform_for_path(
+    app: AppHandle,
+    payload: String,
+    file_path: String,
+    sheet_name: String,
+) -> Result<String, String> {
+    serde_json::from_str::<serde_json::Value>(&payload)
+        .map_err(|err| format!("处理引擎入参不是合法 JSON：{}", err))?;
+
+    let final_payload =
+        dataset_cache::build_python_payload_for_path(&app, &payload, &file_path, &sheet_name)?;
+    let _ = app.emit(
+        PROCESS_LOG_EVENT,
+        serde_json::json!({ "message": "正在调用 Python 转换引擎..." }),
+    );
+    let script_path = resolve_python_script_path(&app)?;
+    let candidates = python_candidates(&app)?;
+    let mut last_error = String::new();
+
+    for candidate in candidates {
+        match execute_python(&candidate, &script_path, &final_payload) {
+            Ok(output) => {
+                let stdout_text = String::from_utf8(output.stdout)
+                    .map_err(|err| format!("Python 输出不是 UTF-8：{}", err))?;
+                if output.status.success() {
+                    let normalized = stdout_text.trim();
+                    if normalized.is_empty() {
+                        return Err("Python 引擎执行成功但未返回结果。".to_string());
+                    }
+                    return Ok(normalized.to_string());
+                }
+
+                let stderr_text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                last_error = if stderr_text.is_empty() {
+                    format!(
+                        "Python 引擎执行失败（{}），退出码：{}",
+                        candidate,
+                        output.status
+                    )
+                } else {
+                    format!("Python 引擎执行失败（{}）：{}", candidate, stderr_text)
+                };
+            }
+            Err(err) => {
+                last_error = err;
+            }
+        }
+    }
+
+    if last_error.is_empty() {
+        Err("调用 Python 引擎失败：未找到可用的 Python 解释器。".to_string())
+    } else {
+        Err(last_error)
+    }
+}
+
 fn normalize_text(value: Option<&serde_json::Value>) -> Option<String> {
     let text = value?.as_str()?.trim();
     if text.is_empty() {
@@ -386,9 +443,12 @@ pub fn run() {
             write_binary_file,
             run_python_transform,
             run_python_transform_for_dataset,
+            run_python_transform_for_path,
             dataset_cache::import_spreadsheet_dataset,
             dataset_cache::import_spreadsheet_dataset_from_path,
+            dataset_cache::inspect_spreadsheet_from_path,
             dataset_cache::read_dataset_sheet_header,
+            dataset_cache::read_spreadsheet_sheet_header_from_path,
             dataset_cache::read_dataset_sheet_preview,
             dataset_cache::read_dataset_sheet_rows
         ])

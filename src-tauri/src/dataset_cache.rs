@@ -924,6 +924,72 @@ pub(crate) fn build_python_payload_for_dataset(
     serde_json::to_string(&payload).map_err(|err| err.to_string())
 }
 
+fn load_process_rows_from_path(file_path: &str, sheet_name: &str) -> Result<Vec<Vec<String>>, String> {
+    let source_format = detect_source_format(file_path, file_path);
+    match source_format.as_str() {
+        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" => {
+            let mut workbook =
+                open_workbook_auto(Path::new(file_path)).map_err(|err| err.to_string())?;
+            let range = workbook
+                .worksheet_range(sheet_name)
+                .map_err(|err| err.to_string())?;
+            let mut rows = Vec::new();
+            for row in range.rows() {
+                let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
+                if values.iter().all(|value| value.is_empty()) {
+                    continue;
+                }
+                rows.push(values);
+            }
+            Ok(rows)
+        }
+        "csv" => load_csv_rows(Path::new(file_path)),
+        _ => Err(format!("当前文件格式暂不支持按路径直接处理：{}", source_format)),
+    }
+}
+
+pub(crate) fn build_python_payload_for_path(
+    app: &AppHandle,
+    base_payload: &str,
+    file_path: &str,
+    sheet_name: &str,
+) -> Result<String, String> {
+    let mut payload = serde_json::from_str::<Value>(base_payload).map_err(|err| err.to_string())?;
+    let payload_object = payload
+        .as_object_mut()
+        .ok_or_else(|| "处理引擎入参不是合法对象。".to_string())?;
+    let rule = payload_object
+        .get("rule")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "处理引擎入参缺少规则配置。".to_string())?;
+
+    let header_row_index = rule
+        .get("sourceHeaderRowIndex")
+        .and_then(Value::as_u64)
+        .unwrap_or(1) as usize;
+    let group_header_row_index = rule
+        .get("sourceGroupHeaderRowIndex")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let group_name = rule
+        .get("sourceGroupName")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    emit_process_log(app, "正在按源文件路径读取处理数据...");
+    let raw_rows = load_process_rows_from_path(file_path, sheet_name)?;
+    emit_process_log(app, "正在构建处理数据载荷...");
+    let sheet_value = build_process_sheet_value(
+        &raw_rows,
+        sheet_name,
+        header_row_index,
+        group_header_row_index,
+        group_name,
+    );
+    payload_object.insert("sheet".to_string(), sheet_value);
+    serde_json::to_string(&payload).map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 pub fn import_spreadsheet_dataset(
     app: AppHandle,
@@ -969,6 +1035,58 @@ pub fn import_spreadsheet_dataset_from_path(
         normalized_path,
         imported_at_ms,
     )
+}
+
+#[tauri::command]
+pub fn inspect_spreadsheet_from_path(file_path: String) -> Result<DatasetImportResult, String> {
+    let normalized_path = file_path.trim();
+    if normalized_path.is_empty() {
+        return Err("导入文件路径不能为空。".to_string());
+    }
+
+    let path = Path::new(normalized_path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| normalized_path.to_string());
+    let imported_at_ms = current_timestamp_ms()?;
+    let workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
+    let sheets = workbook
+        .sheet_names()
+        .iter()
+        .map(|sheet_name| DatasetSheetSummary {
+            name: sheet_name.clone(),
+            row_count: 0,
+            column_count: 0,
+            preview_row_count: 0,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(DatasetImportResult {
+        dataset_id: String::new(),
+        file_name,
+        imported_at_ms,
+        sheets,
+    })
+}
+
+#[tauri::command]
+pub fn read_spreadsheet_sheet_header_from_path(
+    file_path: String,
+    sheet_name: String,
+) -> Result<DatasetSheetRowsResult, String> {
+    let normalized_path = file_path.trim();
+    if normalized_path.is_empty() {
+        return Err("源文件路径不能为空。".to_string());
+    }
+    let (header_rows, _) = parse_sheet_header_from_path(normalized_path, &sheet_name)?;
+    Ok(DatasetSheetRowsResult {
+        name: sheet_name,
+        raw_rows: header_rows,
+        row_count: 0,
+        data_mode: "header".to_string(),
+    })
 }
 
 #[tauri::command]

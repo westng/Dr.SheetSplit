@@ -114,6 +114,18 @@ export async function runPythonTransform(input: ProcessTaskInput): Promise<Engin
         datasetId: input.datasetId,
         sheetName: input.sourceSheetName,
       });
+    } else if (input.sourceFilePath && input.sourceSheetName) {
+      rawResult = await invoke<string>("run_python_transform_for_path", {
+        payload: JSON.stringify({
+          rule: input.rule,
+          mappingGroups: input.mappingGroups,
+          sourceFileName: input.sourceFileName,
+          exportDirectory: input.exportDirectory,
+          unmatchedFallback: input.unmatchedFallback,
+        }),
+        filePath: input.sourceFilePath,
+        sheetName: input.sourceSheetName,
+      });
     } else {
       rawResult = await invoke<string>("run_python_transform", {
         payload: JSON.stringify(input),

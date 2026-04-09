@@ -283,6 +283,13 @@ export async function parseSpreadsheetPath(filePath: string): Promise<Spreadshee
   return normalizePreview(payload);
 }
 
+export async function inspectSpreadsheetPath(filePath: string): Promise<SpreadsheetPreview> {
+  const payload = await invoke<SpreadsheetDatasetImportResponse>("inspect_spreadsheet_from_path", {
+    filePath,
+  });
+  return normalizePreview(payload);
+}
+
 export async function readSpreadsheetSheetPreview(
   datasetId: string,
   sheetName: string,
@@ -300,6 +307,17 @@ export async function readSpreadsheetSheetHeader(
 ): Promise<SpreadsheetSheetData> {
   const payload = await invoke<SpreadsheetDatasetSheetRowsResponse>("read_dataset_sheet_header", {
     datasetId,
+    sheetName,
+  });
+  return normalizeSheetRows(payload);
+}
+
+export async function readSpreadsheetSheetHeaderFromPath(
+  filePath: string,
+  sheetName: string,
+): Promise<SpreadsheetSheetData> {
+  const payload = await invoke<SpreadsheetDatasetSheetRowsResponse>("read_spreadsheet_sheet_header_from_path", {
+    filePath,
     sheetName,
   });
   return normalizeSheetRows(payload);

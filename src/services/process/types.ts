@@ -18,6 +18,7 @@ export type ProcessTaskInput = {
   }>;
   sheet?: ProcessSheetInput;
   datasetId?: string;
+  sourceFilePath?: string;
   sourceSheetName?: string;
   sourceFileName: string;
   exportDirectory: string;
