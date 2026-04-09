@@ -242,6 +242,7 @@ export default {
       nameExpressionText: "字段名表达式",
       valueMode: "取值方式",
       dataType: "数据类型",
+      numberPostProcessMode: "数值后处理",
       sheetTitleEnabled: "启用标题行",
       titleTemplate: "标题模板",
       availableSourceVariables: "来源字段变量",
@@ -390,6 +391,11 @@ export default {
       date: "日期",
       dynamic: "动态列",
     },
+    numberPostProcessModes: {
+      none: "不处理",
+      round: "四舍五入到整数",
+      fixed_2: "保留2位小数",
+    },
     emptyValuePolicies: {
       empty: "留空",
       zero: "填 0",
@@ -448,6 +454,7 @@ export default {
       nameMappingSourceFieldsHint: "选择 1 个或多个字段作为列名映射键。",
       textAggregateHint: "将匹配后的多条记录聚合为一个文本单元格，适用于订单编号、批次号、仓库列表等场景。",
       dynamicAggregateHint: "对选中的“动态列展开”字段在当前结果行上做二次聚合，可用于总计、日均等字段。",
+      numberPostProcessHint: "仅对数值型产出字段生效，在字段原始计算结果生成后再执行。",
       totalRowHint: "这里配置合计行的标签、标签字段，以及每个字段的聚合方式。",
       totalRowFieldConfigsHint: "请至少新增 1 条合计字段规则。",
       totalRowFixedValuePlaceholder: "请输入固定值",

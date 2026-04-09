@@ -21,6 +21,7 @@ import {
   type EngineOutputMatchCondition,
   type EngineOutputFallbackConfig,
   type EngineOutputFallbackMode,
+  type EngineNumberPostProcessMode,
   type EngineOutputValueMode,
   type EngineRelationJoinType,
   type EngineRelationMultiMatchStrategy,
@@ -201,6 +202,16 @@ function normalizeEmptyValuePolicy(value: unknown): EngineEmptyValuePolicy {
     return value;
   }
   return "empty";
+}
+
+function normalizeNumberPostProcessMode(value: unknown): EngineNumberPostProcessMode {
+  if (value === "round" || value === "fixed_2") {
+    return value;
+  }
+  if (value === "ceil" || value === "floor") {
+    return "round";
+  }
+  return "none";
 }
 
 function normalizeStyleHorizontalAlign(value: unknown): EngineStyleHorizontalAlign {
@@ -542,6 +553,9 @@ function normalizeOutputField(value: unknown): EngineRuleOutputField | null {
           ? String((input.dynamicGroupAggregateConfig as { sourceFieldId?: unknown }).sourceFieldId ?? "").trim()
           : "",
     },
+    numberPostProcessMode: normalizeNumberPostProcessMode(
+      (input as { numberPostProcessMode?: unknown }).numberPostProcessMode,
+    ),
     emptyValuePolicy: normalizeEmptyValuePolicy(input.emptyValuePolicy),
     defaultValue: String(input.defaultValue ?? ""),
     dateOutputFormat: String((input as { dateOutputFormat?: unknown }).dateOutputFormat ?? "YYYY/M/D"),

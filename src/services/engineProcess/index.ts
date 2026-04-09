@@ -182,6 +182,18 @@ function formatNumber(value: number): string {
   return rounded.toFixed(2);
 }
 
+function tryParseNumberText(value: string): number | null {
+  const text = asText(value).replace(/,/g, "");
+  if (!text) {
+    return null;
+  }
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
 function parseDateParts(value: unknown): DateParts | null {
   const text = asText(value);
   if (!text) {
@@ -743,6 +755,17 @@ function applyEmptyValuePolicy(field: EngineRuleOutputField, value: string): str
 
 function finalizeOutputValue(field: EngineRuleOutputField, value: string): string {
   const normalized = applyEmptyValuePolicy(field, value);
+  if (field.dataType === "number") {
+    const parsed = tryParseNumberText(normalized);
+    if (parsed !== null) {
+      if (field.numberPostProcessMode === "round") {
+        return String(Math.round(parsed));
+      }
+      if (field.numberPostProcessMode === "fixed_2") {
+        return formatNumber(parsed);
+      }
+    }
+  }
   if (field.dataType === "date") {
     return formatDateValue(normalized, field.dateOutputFormat);
   }
@@ -992,7 +1015,7 @@ function resolveScalarOutputValue(
   mappingGroups: readonly MappingGroup[],
 ): string {
   if (field.valueMode === "constant") {
-    return applyEmptyValuePolicy(field, asText(field.constantValue));
+    return finalizeOutputValue(field, asText(field.constantValue));
   }
 
   const matchedRows = extractMatchedSourceRows(bucket, field);

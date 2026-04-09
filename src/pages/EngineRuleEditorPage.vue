@@ -12,6 +12,7 @@ import {
   ENGINE_OUTPUT_FALLBACK_MODES,
   ENGINE_OUTPUT_DATA_TYPES,
   ENGINE_OUTPUT_NAME_MODES,
+  ENGINE_NUMBER_POST_PROCESS_MODES,
   ENGINE_OUTPUT_VALUE_MODES,
   ENGINE_STYLE_HORIZONTAL_ALIGNS,
   ENGINE_TOTAL_ROW_AGGREGATE_MODES,
@@ -2795,6 +2796,16 @@ onUnmounted(() => {
                   </select>
                 </label>
               </div>
+
+              <label v-if="activeOutput.dataType === 'number'" class="field-block">
+                <span>{{ $t("engineRules.fields.numberPostProcessMode") }}</span>
+                <select v-model="activeOutput.numberPostProcessMode">
+                  <option v-for="mode in ENGINE_NUMBER_POST_PROCESS_MODES" :key="mode" :value="mode">
+                    {{ $t(`engineRules.numberPostProcessModes.${mode}`) }}
+                  </option>
+                </select>
+                <p class="hint-text">{{ $t("engineRules.messages.numberPostProcessHint") }}</p>
+              </label>
 
               <div class="field-grid field-grid-two">
                 <label class="field-block">

@@ -11,6 +11,7 @@ export type EngineResultCompletionBaselineType = "source_table" | "mapping_group
 export type EngineResultCompletionMappingValueType = "source" | "target";
 export type EngineTextAggregateDelimiterMode = "newline" | "comma" | "custom";
 export type EngineOutputFallbackMode = "empty" | "constant" | "baseline" | "mapping";
+export type EngineNumberPostProcessMode = "none" | "round" | "fixed_2";
 export type EngineStyleHorizontalAlign = "left" | "center" | "right";
 export type EngineTotalRowAggregateMode = "sum" | "avg" | "single_first" | "single_last" | "fixed" | "expression";
 export type EngineOutputValueMode =
@@ -199,6 +200,7 @@ export type EngineRuleOutputField = {
   textAggregateConfig: EngineTextAggregateConfig;
   dynamicColumnConfig: EngineDynamicColumnConfig;
   dynamicGroupAggregateConfig: EngineDynamicGroupAggregateConfig;
+  numberPostProcessMode: EngineNumberPostProcessMode;
   emptyValuePolicy: EngineEmptyValuePolicy;
   defaultValue: string;
   dateOutputFormat: string;
@@ -273,6 +275,11 @@ export const ENGINE_OUTPUT_FALLBACK_MODES: EngineOutputFallbackMode[] = [
   "constant",
   "baseline",
   "mapping",
+];
+export const ENGINE_NUMBER_POST_PROCESS_MODES: EngineNumberPostProcessMode[] = [
+  "none",
+  "round",
+  "fixed_2",
 ];
 export const ENGINE_OUTPUT_VALUE_MODES: EngineOutputValueMode[] = [
   "source",
@@ -469,6 +476,7 @@ export function createEmptyEngineRuleOutputField(): EngineRuleOutputField {
     textAggregateConfig: createEmptyEngineTextAggregateConfig(),
     dynamicColumnConfig: createEmptyEngineDynamicColumnConfig(),
     dynamicGroupAggregateConfig: createEmptyEngineDynamicGroupAggregateConfig(),
+    numberPostProcessMode: "none",
     emptyValuePolicy: "empty",
     defaultValue: "",
     dateOutputFormat: "YYYY/M/D",

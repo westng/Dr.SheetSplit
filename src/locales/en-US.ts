@@ -242,6 +242,7 @@ export default {
       nameExpressionText: "Field Name Expression",
       valueMode: "Value Mode",
       dataType: "Data Type",
+      numberPostProcessMode: "Number Post-Process",
       sheetTitleEnabled: "Enable Title Row",
       titleTemplate: "Title Template",
       availableSourceVariables: "Source Variables",
@@ -390,6 +391,11 @@ export default {
       date: "Date",
       dynamic: "Dynamic",
     },
+    numberPostProcessModes: {
+      none: "No Processing",
+      round: "Round to Integer",
+      fixed_2: "Keep 2 Decimals",
+    },
     emptyValuePolicies: {
       empty: "Leave Empty",
       zero: "Use Zero",
@@ -449,6 +455,7 @@ export default {
       nameMappingSourceFieldsHint: "Choose one or more source fields as the naming mapping key.",
       textAggregateHint: "Aggregate matched records into one text cell, suitable for order numbers, batch lists, warehouse lists, and similar cases.",
       dynamicAggregateHint: "Aggregate the selected dynamic-column field on the current result row, suitable for total or average fields.",
+      numberPostProcessHint: "Only applies to numeric output fields and runs after the field's raw calculation result is produced.",
       totalRowHint: "Configure the total row label, label field, and the aggregate mode for each field here.",
       totalRowFieldConfigsHint: "Add at least one total-row field rule.",
       totalRowFixedValuePlaceholder: "Enter a fixed value",
