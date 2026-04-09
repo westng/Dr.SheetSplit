@@ -12,11 +12,6 @@ export const routes: RouteRecordRaw[] = [
     component: () => import("../pages/MappingEditorPage.vue"),
   },
   {
-    path: "/rule-editor",
-    name: "rule-editor",
-    component: () => import("../pages/RuleEditorPage.vue"),
-  },
-  {
     path: "/engine-rule-editor",
     name: "engine-rule-editor",
     component: () => import("../pages/EngineRuleEditorPage.vue"),

@@ -14,17 +14,9 @@ export default {
     history: "历史记录",
     clearHistory: "清空",
     account: "每日博士",
-    process: {
-      title: "处理表格",
-      description: "开始新的拆分任务",
-    },
     engineProcess: {
       title: "表格处理",
       description: "使用最新规则引擎上传并校验来源表",
-    },
-    rules: {
-      title: "配置规则",
-      description: "设置拆分字段与命名模板",
     },
     engineRules: {
       title: "规则引擎",
@@ -74,9 +66,7 @@ export default {
     },
   },
   content: {
-    process: "处理表格",
     engineProcess: "表格处理",
-    rules: "配置规则",
     engineRules: "规则引擎",
     mapping: "映射管理",
     settings: "设置",

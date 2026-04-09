@@ -1,9 +1,9 @@
 import { ref } from "vue";
 
-export type MainMenu = "process" | "engineProcess" | "rules" | "engineRules" | "mapping" | "settings";
+export type MainMenu = "engineProcess" | "engineRules" | "mapping" | "settings";
 
 const activeHistoryId = ref("");
-const activeMenu = ref<MainMenu>("process");
+const activeMenu = ref<MainMenu>("engineProcess");
 
 export function useUiStore() {
   return {

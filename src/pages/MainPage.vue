@@ -3,12 +3,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import ConfigPanel from "../components/config/ConfigPanel.vue";
 import EngineConfigPanel from "../components/engine/EngineConfigPanel.vue";
 import EngineProcessPanel from "../components/engine/EngineProcessPanel.vue";
 import HistoryDetailPanel from "../components/history/HistoryDetailPanel.vue";
 import MappingPanel from "../components/mapping/MappingPanel.vue";
-import WorkspacePanel from "../components/workspace/WorkspacePanel.vue";
 import { useHistoryStore, useLocaleStore, useUiStore } from "../store";
 import {
   accentColors,
@@ -55,9 +53,6 @@ const historyItems = computed(() => histories.value);
 const importFormatsText = ref("");
 const currentYear = new Date().getFullYear();
 const contentTitle = computed(() => {
-  if (activeMenu.value === "rules") {
-    return t("content.rules");
-  }
   if (activeMenu.value === "engineProcess") {
     return t("content.engineProcess");
   }
@@ -70,7 +65,7 @@ const contentTitle = computed(() => {
   if (activeMenu.value === "settings") {
     return t("content.settings");
   }
-  return t("content.process");
+  return t("content.engineProcess");
 });
 const footerCopyright = computed(() =>
   t("settings.footer.copyright", {
@@ -150,28 +145,12 @@ watch(allowedImportFormats, () => {
 
       <section class="nav-section">
         <h2>{{ $t("sidebar.menu") }}</h2>
-        <button class="menu-card" :class="{ active: activeMenu === 'process' }" type="button"
-          @click="activeMenu = 'process'; activeHistoryId = ''">
-          <span class="menu-icon">+</span>
-          <span class="menu-meta">
-            <strong>{{ $t("sidebar.process.title") }}</strong>
-            <small>{{ $t("sidebar.process.description") }}</small>
-          </span>
-        </button>
         <button class="menu-card" :class="{ active: activeMenu === 'engineProcess' }" type="button"
           @click="activeMenu = 'engineProcess'; activeHistoryId = ''">
           <span class="menu-icon">T</span>
           <span class="menu-meta">
             <strong>{{ $t("sidebar.engineProcess.title") }}</strong>
             <small>{{ $t("sidebar.engineProcess.description") }}</small>
-          </span>
-        </button>
-        <button class="menu-card" :class="{ active: activeMenu === 'rules' }" type="button"
-          @click="activeMenu = 'rules'">
-          <span class="menu-icon">R</span>
-          <span class="menu-meta">
-            <strong>{{ $t("sidebar.rules.title") }}</strong>
-            <small>{{ $t("sidebar.rules.description") }}</small>
           </span>
         </button>
         <button class="menu-card" :class="{ active: activeMenu === 'engineRules' }" type="button"
@@ -205,7 +184,7 @@ watch(allowedImportFormats, () => {
           </li>
           <li v-for="item in historyItems" :key="item.id">
             <button type="button" class="history-card" :class="{ active: item.id === activeHistoryId }"
-              @click="activeMenu = 'process'; activeHistoryId = item.id">
+              @click="activeMenu = 'engineProcess'; activeHistoryId = item.id">
               <span class="history-main">
                 <span class="history-name">{{ item.ruleName || $t("rules.library.unnamed") }}</span>
                 <span class="history-meta">
@@ -230,12 +209,9 @@ watch(allowedImportFormats, () => {
         <h2>{{ contentTitle }}</h2>
       </header>
 
-      <section v-if="activeMenu === 'rules'" class="content-body">
-        <ConfigPanel />
-      </section>
-
-      <section v-else-if="activeMenu === 'engineProcess'" class="content-body">
-        <EngineProcessPanel />
+      <section v-if="activeMenu === 'engineProcess'" class="content-body">
+        <HistoryDetailPanel v-if="activeHistoryId" :history-id="activeHistoryId" @back="activeHistoryId = ''" />
+        <EngineProcessPanel v-else />
       </section>
 
       <section v-else-if="activeMenu === 'mapping'" class="content-body">
@@ -385,10 +361,6 @@ watch(allowedImportFormats, () => {
         </footer>
       </section>
 
-      <section v-else class="content-body">
-        <HistoryDetailPanel v-if="activeHistoryId" :history-id="activeHistoryId" @back="activeHistoryId = ''" />
-        <WorkspacePanel v-else />
-      </section>
     </main>
   </div>
 </template>

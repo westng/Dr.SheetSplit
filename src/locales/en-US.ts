@@ -14,17 +14,9 @@ export default {
     history: "History",
     clearHistory: "Clear",
     account: "Dr.ProDaily",
-    process: {
-      title: "Process Table",
-      description: "Start a new split task",
-    },
     engineProcess: {
       title: "Table Processing",
       description: "Use the latest rule engine to upload and validate source tables",
-    },
-    rules: {
-      title: "Rule Config",
-      description: "Set split fields and naming templates",
     },
     engineRules: {
       title: "Rule Engine",
@@ -74,9 +66,7 @@ export default {
     },
   },
   content: {
-    process: "Process Table",
     engineProcess: "Table Processing",
-    rules: "Rule Config",
     engineRules: "Rule Engine",
     mapping: "Mapping Management",
     settings: "Settings",
