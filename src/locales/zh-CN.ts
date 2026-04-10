@@ -106,6 +106,7 @@ export default {
     actions: {
       openRuleEngine: "打开规则引擎",
       uploadSource: "上传来源表",
+      loadSourceMeta: "读取来源信息",
       validateRule: "测试规则",
       startProcess: "开始处理",
       processing: "处理中...",
@@ -122,6 +123,7 @@ export default {
       missingResultField: "字段校验失败：产出字段“{output}”引用了不存在的行维度字段“{field}”。",
       missingDynamicAggregateSource: "字段校验失败：产出字段“{output}”引用的动态列来源不存在，请重新选择。",
       validationBlocked: "规则校验未通过，已阻止开始处理。",
+      preparingSources: "正在准备来源文件...",
       processStarted: "开始执行：规则「{rule}」。",
       processCompleted: "处理完成：{sheets} 个 Sheet，{rows} 行数据，输出文件：{output}",
       processFailed: "处理失败。",

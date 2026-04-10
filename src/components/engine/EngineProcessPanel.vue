@@ -1,14 +1,15 @@
 <script setup lang="ts">
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useEngineRuleStore, useMappingStore, useUiStore } from "../../store";
 import type { EngineRuleDefinition, EngineRuleOutputField, EngineRuleSource } from "../../types/engineRule";
 import { validateEngineRuleDraft } from "../../utils/engineRuleValidator";
+import { basenameFromPath } from "../../utils/nativeFile";
 import {
   buildSheetPreview,
-  parseSpreadsheetPath,
-  readSpreadsheetSheetHeader,
+  startSpreadsheetInspectJob,
   type SpreadsheetPreview,
   type SpreadsheetSheetPreview,
 } from "../../utils/spreadsheetParser";
@@ -18,6 +19,8 @@ import type { TaskHistoryLogItem } from "../../types/history";
 
 type RuntimeSourceState = {
   datasetId: string;
+  inspectJobId: string;
+  filePath: string;
   fileName: string;
   sheetName: string;
   preview: SpreadsheetPreview | null;
@@ -30,6 +33,21 @@ type ValidationState = {
   ran: boolean;
   passed: boolean;
   errors: string[];
+};
+
+type SourceInspectJobEvent = {
+  jobId: string;
+  sourceId: string;
+  status: "queued" | "reading_sheets" | "reading_headers" | "done" | "failed";
+  sheetName: string;
+  preview?: SpreadsheetPreview | null;
+  header?: {
+    name: string;
+    rawRows: string[][];
+    rowCount: number;
+    dataMode?: "header" | "preview" | "full";
+  } | null;
+  error?: string | null;
 };
 
 const { t } = useI18n();
@@ -54,6 +72,9 @@ const runSummary = ref<{
   sheetCount: number;
   rowCount: number;
 } | null>(null);
+let unlistenSourceInspectJob: UnlistenFn | undefined;
+const MAX_PROCESS_LOGS = 200;
+const EXPORT_DIRECTORY_STORAGE_KEY = "settings.exportDirectory";
 
 const availableRules = computed(() =>
   engineRules.value
@@ -71,7 +92,7 @@ const overallReady = computed(() => {
   }
   return selectedRule.value.sources.every((source) => {
     const state = runtimeSources.value[source.id];
-    return Boolean(state?.datasetId && state.sheetName && state.sheetPreview && !state.error);
+    return Boolean((state?.filePath || state?.datasetId) && state?.sheetName && state?.sheetPreview && !state?.error);
   });
 });
 
@@ -81,7 +102,7 @@ const sourceReadyCount = computed(() => {
   }
   return selectedRule.value.sources.filter((source) => {
     const state = runtimeSources.value[source.id];
-    return Boolean(state?.datasetId && state.sheetName && state.sheetPreview && !state.error);
+    return Boolean((state?.filePath || state?.datasetId) && state?.sheetName && state?.sheetPreview && !state?.error);
   }).length;
 });
 
@@ -94,6 +115,8 @@ const displayProcessLogs = computed(() => [...processLogs.value].reverse());
 function createRuntimeSourceState(source: EngineRuleSource): RuntimeSourceState {
   return {
     datasetId: "",
+    inspectJobId: "",
+    filePath: "",
     fileName: source.sourceFileName.trim(),
     sheetName: source.sourceSheetName.trim(),
     preview: null,
@@ -125,12 +148,22 @@ function appendProcessLog(message: string, level: "info" | "success" | "error" =
     time: formatLogTime(),
     message: normalized,
   });
+  if (processLogs.value.length > MAX_PROCESS_LOGS) {
+    processLogs.value.splice(0, processLogs.value.length - MAX_PROCESS_LOGS);
+  }
 }
 
 function clearProcessState(): void {
   processLogs.value = [];
   runError.value = "";
   runSummary.value = null;
+}
+
+function resolvePreferredExportDirectory(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return String(window.localStorage.getItem(EXPORT_DIRECTORY_STORAGE_KEY) ?? "").trim();
 }
 
 function ensureRuntimeSourceState(source: EngineRuleSource): RuntimeSourceState {
@@ -233,7 +266,7 @@ function validateRuntime(rule: EngineRuleDefinition): string[] {
 
   rule.sources.forEach((source, index) => {
     const state = runtimeSources.value[source.id];
-    if (!state?.datasetId) {
+    if (!state?.filePath && !state?.datasetId) {
       errors.push(
         t("engineProcess.messages.sourceUploadRequired", {
           source: sourceLabel(index),
@@ -373,34 +406,35 @@ function validateRuntime(rule: EngineRuleDefinition): string[] {
   return Array.from(new Set(errors.map((item) => item.trim()).filter(Boolean)));
 }
 
-async function loadSourceHeader(rule: EngineRuleDefinition, source: EngineRuleSource): Promise<void> {
+async function queueSourceInspectJob(_rule: EngineRuleDefinition, source: EngineRuleSource): Promise<RuntimeSourceState> {
   const state = ensureRuntimeSourceState(source);
-  if (!state.datasetId || !state.sheetName.trim()) {
-    state.sheetPreview = null;
-    return;
+  if (!state.filePath) {
+    return state;
   }
 
   state.loading = true;
   state.error = "";
-  try {
-    const headerData = await readSpreadsheetSheetHeader(state.datasetId, state.sheetName);
-    state.sheetPreview = buildSheetPreview(headerData, {
-      headerRowIndex: source.sourceHeaderRowIndex,
-      groupHeaderRowIndex: source.sourceGroupHeaderRowIndex,
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error ?? "");
-    state.sheetPreview = null;
-    state.error = t("engineProcess.messages.headerLoadFailed", {
-      source: getSourceName(rule, source.id),
-      reason: reason || "-",
-    });
-  } finally {
-    state.loading = false;
-  }
+  state.sheetPreview = null;
+  state.inspectJobId = await startSpreadsheetInspectJob(
+    source.id,
+    state.filePath,
+    state.sheetName.trim() || source.sourceSheetName.trim(),
+  );
+  return state;
 }
 
-async function uploadSourceFile(rule: EngineRuleDefinition, source: EngineRuleSource): Promise<void> {
+async function ensureSourceDatasetLoaded(source: EngineRuleSource): Promise<RuntimeSourceState> {
+  const state = ensureRuntimeSourceState(source);
+  if (state.datasetId || !state.filePath) {
+    return state;
+  }
+  if (state.loading) {
+    throw new Error(t("engineProcess.messages.preparingSources"));
+  }
+  throw new Error(state.error || t("engineProcess.messages.preparingSources"));
+}
+
+async function uploadSourceFile(_rule: EngineRuleDefinition, source: EngineRuleSource): Promise<void> {
   const selected = await open({
     multiple: false,
     filters: [
@@ -415,8 +449,8 @@ async function uploadSourceFile(rule: EngineRuleDefinition, source: EngineRuleSo
   }
 
   const state = ensureRuntimeSourceState(source);
-  state.loading = true;
   state.error = "";
+  state.loading = false;
   validationState.value = {
     ran: false,
     passed: false,
@@ -424,25 +458,24 @@ async function uploadSourceFile(rule: EngineRuleDefinition, source: EngineRuleSo
   };
 
   try {
-    const preview = await parseSpreadsheetPath(selected);
-    state.preview = preview;
-    state.datasetId = preview.datasetId;
-    state.fileName = preview.fileName;
-    state.sheetName = preview.sheets.some((sheet) => sheet.name === source.sourceSheetName)
-      ? source.sourceSheetName
-      : preview.sheets[0]?.name ?? "";
-    await loadSourceHeader(rule, source);
+    state.preview = null;
+    state.sheetPreview = null;
+    state.datasetId = "";
+    state.inspectJobId = "";
+    state.filePath = selected;
+    state.fileName = basenameFromPath(selected) || source.sourceFileName || t("engineProcess.messages.noFileTemplate");
+    state.sheetName = source.sourceSheetName.trim();
+    void queueSourceInspectJob(_rule, source);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error ?? "");
     state.preview = null;
     state.sheetPreview = null;
     state.datasetId = "";
+    state.filePath = "";
     state.error = t("engineProcess.messages.sourceLoadFailed", {
-      source: getSourceName(rule, source.id),
+      source: getSourceName(_rule, source.id),
       reason: reason || "-",
     });
-  } finally {
-    state.loading = false;
   }
 }
 
@@ -452,10 +485,10 @@ async function handleSourceSheetChange(rule: EngineRuleDefinition, source: Engin
     passed: false,
     errors: [],
   };
-  await loadSourceHeader(rule, source);
+  void queueSourceInspectJob(rule, source);
 }
 
-function runValidation(): void {
+async function runValidation(): Promise<void> {
   const rule = selectedRule.value;
   if (!rule) {
     validationState.value = {
@@ -500,20 +533,25 @@ async function handleStartProcess(): Promise<void> {
   appendProcessLog(t("engineProcess.messages.processStarted", { rule: rule.name || t("engineRules.library.unnamed") }));
 
   try {
+    appendProcessLog(t("engineProcess.messages.preparingSources"));
+    const preparedSources = await Promise.all(
+      rule.sources.map(async (source) => {
+        const state = await ensureSourceDatasetLoaded(source);
+        return {
+          sourceId: source.id,
+          datasetId: state.datasetId,
+          sheetName: state.sheetName,
+          fileName: state.fileName,
+        };
+      }),
+    );
+
     const result = await runEngineProcessTask(
       {
         rule,
-        sources: rule.sources.map((source) => {
-          const state = runtimeSources.value[source.id];
-          return {
-            sourceId: source.id,
-            datasetId: state?.datasetId ?? "",
-            sheetName: state?.sheetName ?? "",
-            fileName: state?.fileName ?? "",
-          };
-        }),
+        sources: preparedSources,
         mappingGroups: mappingGroups.value,
-        exportDirectory: "",
+        exportDirectory: resolvePreferredExportDirectory(),
       },
       {
         onLog: appendProcessLog,
@@ -583,6 +621,70 @@ watch(
   },
   { immediate: true },
 );
+
+onMounted(async () => {
+  unlistenSourceInspectJob = await listen<SourceInspectJobEvent>("source-inspect-job", (event) => {
+    const payload = event.payload;
+    const rule = selectedRule.value;
+    if (!rule) {
+      return;
+    }
+
+    const source = rule.sources.find((item) => item.id === payload.sourceId);
+    if (!source) {
+      return;
+    }
+
+    const state = ensureRuntimeSourceState(source);
+    if (state.inspectJobId && payload.jobId !== state.inspectJobId) {
+      return;
+    }
+
+    if (payload.status === "queued" || payload.status === "reading_sheets" || payload.status === "reading_headers") {
+      state.loading = true;
+      state.error = "";
+      if (payload.preview) {
+        state.preview = payload.preview;
+        state.datasetId = payload.preview.datasetId || state.datasetId;
+        state.fileName = payload.preview.fileName || state.fileName;
+      }
+      if (payload.sheetName) {
+        state.sheetName = payload.sheetName;
+      }
+      return;
+    }
+
+    if (payload.status === "done") {
+      state.loading = false;
+      state.error = "";
+      state.preview = payload.preview ?? state.preview;
+      state.datasetId = payload.preview?.datasetId || state.datasetId;
+      state.fileName = payload.preview?.fileName || state.fileName;
+      state.sheetName = payload.sheetName || state.sheetName;
+      if (payload.header) {
+        state.sheetPreview = buildSheetPreview({
+          ...payload.header,
+          dataMode: payload.header.dataMode ?? "header",
+        }, {
+          headerRowIndex: source.sourceHeaderRowIndex,
+          groupHeaderRowIndex: source.sourceGroupHeaderRowIndex,
+        });
+      }
+      return;
+    }
+
+    state.loading = false;
+    state.sheetPreview = null;
+    state.error = t("engineProcess.messages.sourceLoadFailed", {
+      source: getSourceName(rule, source.id),
+      reason: payload.error || "-",
+    });
+  });
+});
+
+onUnmounted(() => {
+  unlistenSourceInspectJob?.();
+});
 
 void reloadEngineRules();
 </script>
@@ -727,10 +829,10 @@ void reloadEngineRules();
                     <button
                       type="button"
                       class="secondary-btn"
-                      :disabled="getRuntimeSourceState(source).loading"
+                      :disabled="isProcessing"
                       @click="uploadSourceFile(selectedRule, source)"
                     >
-                      {{ getRuntimeSourceState(source).loading ? $t("engineRules.messages.uploading") : $t("engineProcess.actions.uploadSource") }}
+                      {{ $t("engineProcess.actions.uploadSource") }}
                     </button>
                     <button type="button" class="text-btn" @click="toggleSourceExpanded(source.id)">
                       {{ isSourceExpanded(source.id) ? $t("mapping.actions.collapse") : $t("mapping.actions.expand") }}
@@ -875,12 +977,12 @@ void reloadEngineRules();
                 <strong>{{ $t("engineProcess.logsTitle") }}</strong>
                 <span>{{ processLogs.length }}</span>
               </div>
-              <ul v-if="displayProcessLogs.length > 0" class="log-list">
-                <li v-for="logItem in displayProcessLogs" :key="logItem.id" class="log-item">
+              <div v-if="displayProcessLogs.length > 0" class="log-stream">
+                <p v-for="logItem in displayProcessLogs" :key="logItem.id" class="log-line">
                   <span class="log-time">{{ logItem.time }}</span>
                   <span class="log-message" :class="logItem.level">{{ logItem.message }}</span>
-                </li>
-              </ul>
+                </p>
+              </div>
               <p v-else class="empty-copy">{{ $t("engineProcess.logsEmpty") }}</p>
             </div>
           </section>
@@ -1339,32 +1441,32 @@ void reloadEngineRules();
   font-size: var(--fs-sm);
 }
 
-.log-list {
+.log-stream {
   margin: 0;
-  padding: 0;
-  list-style: none;
+  padding: 12px 14px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
   max-height: 360px;
   overflow: auto;
+  border: 1px solid var(--stroke-soft);
+  border-radius: 14px;
+  background: var(--bg-input);
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
 
-.log-list::-webkit-scrollbar {
+.log-stream::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
 
-.log-item {
+.log-line {
+  margin: 0;
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
-  padding: 10px 12px;
-  border: 1px solid var(--stroke-soft);
-  border-radius: 12px;
-  background: var(--bg-input);
+  padding: 0;
 }
 
 .log-time {

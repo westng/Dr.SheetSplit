@@ -106,6 +106,7 @@ export default {
     actions: {
       openRuleEngine: "Open Rule Engine",
       uploadSource: "Upload Source",
+      loadSourceMeta: "Load Source Info",
       validateRule: "Validate Rule",
       startProcess: "Start Processing",
       processing: "Processing...",
@@ -122,6 +123,7 @@ export default {
       missingResultField: "Field validation failed: output field “{output}” references missing row-dimension field “{field}”.",
       missingDynamicAggregateSource: "Field validation failed: output field “{output}” references a missing dynamic-column source. Please reselect it.",
       validationBlocked: "Validation failed. Processing was blocked.",
+      preparingSources: "Preparing source files...",
       processStarted: "Started: rule “{rule}”.",
       processCompleted: "Completed: {sheets} sheets, {rows} rows, output file: {output}",
       processFailed: "Processing failed.",

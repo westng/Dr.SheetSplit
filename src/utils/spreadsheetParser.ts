@@ -29,6 +29,13 @@ export type SpreadsheetPreview = {
   sheets: SpreadsheetSheetSummary[];
 };
 
+export type SpreadsheetSheetPage = {
+  name: string;
+  headers: string[];
+  rows: Record<string, string>[];
+  rowCount: number;
+};
+
 const DATE_HEADER_PATTERN = /^\d{8}$/;
 
 type SpreadsheetDatasetImportResponse = {
@@ -43,6 +50,13 @@ type SpreadsheetDatasetSheetRowsResponse = {
   rawRows: string[][];
   rowCount: number;
   dataMode?: "header" | "preview" | "full";
+};
+
+type SpreadsheetDatasetSheetPageResponse = {
+  name: string;
+  headers: string[];
+  rows: Record<string, string>[];
+  rowCount: number;
 };
 
 export type SpreadsheetSheetHeaderLayout = {
@@ -98,6 +112,25 @@ function normalizePreview(input: SpreadsheetDatasetImportResponse): SpreadsheetP
           previewRowCount: Number(sheet.previewRowCount ?? 0),
         }))
       : [],
+  };
+}
+
+function normalizeSheetPage(input: SpreadsheetDatasetSheetPageResponse): SpreadsheetSheetPage {
+  return {
+    name: String(input.name ?? "").trim(),
+    headers: Array.isArray(input.headers)
+      ? input.headers.map((header) => String(header ?? "").trim()).filter(Boolean)
+      : [],
+    rows: Array.isArray(input.rows)
+      ? input.rows.map((row) =>
+          row && typeof row === "object"
+            ? Object.fromEntries(
+                Object.entries(row).map(([key, value]) => [String(key).trim(), toDisplayValue(value)]),
+              )
+            : {},
+        )
+      : [],
+    rowCount: Number(input.rowCount ?? 0),
   };
 }
 
@@ -332,4 +365,35 @@ export async function readSpreadsheetSheetRows(
     sheetName,
   });
   return normalizeSheetRows(payload);
+}
+
+export async function readSpreadsheetSheetPage(
+  datasetId: string,
+  sheetName: string,
+  headerRowIndex: number,
+  groupHeaderRowIndex: number,
+  offset: number,
+  limit: number,
+): Promise<SpreadsheetSheetPage> {
+  const payload = await invoke<SpreadsheetDatasetSheetPageResponse>("read_dataset_sheet_page", {
+    datasetId,
+    sheetName,
+    headerRowIndex,
+    groupHeaderRowIndex,
+    offset,
+    limit,
+  });
+  return normalizeSheetPage(payload);
+}
+
+export async function startSpreadsheetInspectJob(
+  sourceId: string,
+  filePath: string,
+  preferredSheetName: string,
+): Promise<string> {
+  return invoke<string>("start_source_inspect_job", {
+    sourceId,
+    filePath,
+    preferredSheetName,
+  });
 }

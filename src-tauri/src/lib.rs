@@ -3,19 +3,46 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     process::{Command, Output, Stdio},
 };
 
 use base64::Engine;
+use serde::Serialize;
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+use tauri::async_runtime::{spawn, spawn_blocking};
 
 mod dataset_cache;
+mod engine_backend;
 
 const SLOGAN_API_URL: &str =
     "https://api.southerly.top/api/yiyan?msg=%E8%AF%97%E8%AF%8D&output=json";
 const PYTHON_SCRIPT_RESOURCE_PATH: &str = "python/transform_engine.py";
 const PYTHON_INTERPRETER_ENV_KEY: &str = "DR_SHEETSPLIT_PYTHON";
 const PROCESS_LOG_EVENT: &str = "process-log";
+const SOURCE_INSPECT_JOB_EVENT: &str = "source-inspect-job";
+static SOURCE_INSPECT_JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SourceInspectJobEvent {
+    job_id: String,
+    source_id: String,
+    status: String,
+    sheet_name: String,
+    preview: Option<dataset_cache::DatasetImportResult>,
+    header: Option<dataset_cache::DatasetSheetRowsResult>,
+    error: Option<String>,
+}
+
+fn next_source_inspect_job_id() -> String {
+    let counter = SOURCE_INSPECT_JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("source_inspect_{counter}")
+}
+
+fn emit_source_inspect_event(app: &AppHandle, event: SourceInspectJobEvent) {
+    let _ = app.emit(SOURCE_INSPECT_JOB_EVENT, event);
+}
 
 #[cfg(target_os = "windows")]
 const BUNDLED_PYTHON_RELATIVE_CANDIDATES: &[&str] =
@@ -363,6 +390,183 @@ fn run_python_transform_for_path(
     }
 }
 
+#[tauri::command]
+async fn start_source_inspect_job(
+    app: AppHandle,
+    source_id: String,
+    file_path: String,
+    preferred_sheet_name: String,
+) -> Result<String, String> {
+    let normalized_file_path = file_path.trim().to_string();
+    if normalized_file_path.is_empty() {
+        return Err("来源文件路径不能为空。".to_string());
+    }
+
+    let job_id = next_source_inspect_job_id();
+    emit_source_inspect_event(
+        &app,
+        SourceInspectJobEvent {
+            job_id: job_id.clone(),
+            source_id: source_id.clone(),
+            status: "queued".to_string(),
+            sheet_name: String::new(),
+            preview: None,
+            header: None,
+            error: None,
+        },
+    );
+
+    let app_handle = app.clone();
+    let return_job_id = job_id.clone();
+    spawn(async move {
+        emit_source_inspect_event(
+            &app_handle,
+            SourceInspectJobEvent {
+                job_id: job_id.clone(),
+                source_id: source_id.clone(),
+                status: "reading_sheets".to_string(),
+                sheet_name: String::new(),
+                preview: None,
+                header: None,
+                error: None,
+            },
+        );
+
+        let preview_result = spawn_blocking({
+            let app_handle = app_handle.clone();
+            let file_path = normalized_file_path.clone();
+            move || dataset_cache::import_spreadsheet_dataset_from_path(app_handle, file_path)
+        }).await;
+
+        let preview = match preview_result {
+            Ok(Ok(preview)) => preview,
+            Ok(Err(error)) => {
+                emit_source_inspect_event(
+                    &app_handle,
+                    SourceInspectJobEvent {
+                        job_id: job_id.clone(),
+                        source_id: source_id.clone(),
+                        status: "failed".to_string(),
+                        sheet_name: String::new(),
+                        preview: None,
+                        header: None,
+                        error: Some(error),
+                    },
+                );
+                return;
+            }
+            Err(error) => {
+                emit_source_inspect_event(
+                    &app_handle,
+                    SourceInspectJobEvent {
+                        job_id: job_id.clone(),
+                        source_id: source_id.clone(),
+                        status: "failed".to_string(),
+                        sheet_name: String::new(),
+                        preview: None,
+                        header: None,
+                        error: Some(error.to_string()),
+                    },
+                );
+                return;
+            }
+        };
+
+        let resolved_sheet_name = if !preferred_sheet_name.trim().is_empty()
+            && preview
+                .sheets
+                .iter()
+                .any(|sheet| sheet.name == preferred_sheet_name)
+        {
+            preferred_sheet_name.trim().to_string()
+        } else {
+            preview
+                .sheets
+                .first()
+                .map(|sheet| sheet.name.clone())
+                .unwrap_or_default()
+        };
+
+        emit_source_inspect_event(
+            &app_handle,
+            SourceInspectJobEvent {
+                job_id: job_id.clone(),
+                source_id: source_id.clone(),
+                status: "reading_headers".to_string(),
+                sheet_name: resolved_sheet_name.clone(),
+                preview: Some(preview.clone()),
+                header: None,
+                error: None,
+            },
+        );
+
+        let dataset_id = preview.dataset_id.clone();
+        let header_result = spawn_blocking({
+            let app_handle = app_handle.clone();
+            let sheet_name = resolved_sheet_name.clone();
+            move || dataset_cache::read_dataset_sheet_header(app_handle, dataset_id, sheet_name)
+        }).await;
+
+        match header_result {
+            Ok(Ok(header)) => {
+                emit_source_inspect_event(
+                    &app_handle,
+                    SourceInspectJobEvent {
+                        job_id: job_id.clone(),
+                        source_id: source_id.clone(),
+                        status: "done".to_string(),
+                        sheet_name: resolved_sheet_name,
+                        preview: Some(preview),
+                        header: Some(header),
+                        error: None,
+                    },
+                );
+            }
+            Ok(Err(error)) => {
+                emit_source_inspect_event(
+                    &app_handle,
+                    SourceInspectJobEvent {
+                        job_id: job_id.clone(),
+                        source_id: source_id.clone(),
+                        status: "failed".to_string(),
+                        sheet_name: resolved_sheet_name,
+                        preview: Some(preview),
+                        header: None,
+                        error: Some(error),
+                    },
+                );
+            }
+            Err(error) => {
+                emit_source_inspect_event(
+                    &app_handle,
+                    SourceInspectJobEvent {
+                        job_id: job_id.clone(),
+                        source_id: source_id.clone(),
+                        status: "failed".to_string(),
+                        sheet_name: resolved_sheet_name,
+                        preview: Some(preview),
+                        header: None,
+                        error: Some(error.to_string()),
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(return_job_id)
+}
+
+#[tauri::command]
+async fn run_engine_process_task(
+    app: AppHandle,
+    input: engine_backend::BackendEngineProcessTaskInput,
+) -> Result<engine_backend::BackendEngineProcessTaskResult, String> {
+    let app_handle = app.clone();
+    spawn_blocking(move || engine_backend::run_engine_process_task(&app_handle, input))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 fn normalize_text(value: Option<&serde_json::Value>) -> Option<String> {
     let text = value?.as_str()?.trim();
     if text.is_empty() {
@@ -444,13 +648,16 @@ pub fn run() {
             run_python_transform,
             run_python_transform_for_dataset,
             run_python_transform_for_path,
+            start_source_inspect_job,
+            run_engine_process_task,
             dataset_cache::import_spreadsheet_dataset,
             dataset_cache::import_spreadsheet_dataset_from_path,
             dataset_cache::inspect_spreadsheet_from_path,
             dataset_cache::read_dataset_sheet_header,
             dataset_cache::read_spreadsheet_sheet_header_from_path,
             dataset_cache::read_dataset_sheet_preview,
-            dataset_cache::read_dataset_sheet_rows
+            dataset_cache::read_dataset_sheet_rows,
+            dataset_cache::read_dataset_sheet_page
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

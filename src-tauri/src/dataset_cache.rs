@@ -6,6 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+use std::collections::HashMap;
 
 use base64::Engine;
 use calamine::{open_workbook_auto, open_workbook_auto_from_rs, Data, Range, Reader};
@@ -20,7 +21,7 @@ const PREVIEW_ROW_LIMIT: usize = 64;
 const PROCESS_LOG_EVENT: &str = "process-log";
 static DATASET_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatasetSheetSummary {
     pub name: String,
@@ -29,7 +30,7 @@ pub struct DatasetSheetSummary {
     pub preview_row_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatasetImportResult {
     pub dataset_id: String,
@@ -38,13 +39,22 @@ pub struct DatasetImportResult {
     pub sheets: Vec<DatasetSheetSummary>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatasetSheetRowsResult {
     pub name: String,
     pub raw_rows: Vec<Vec<String>>,
     pub row_count: usize,
     pub data_mode: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatasetSheetPageResult {
+    pub name: String,
+    pub headers: Vec<String>,
+    pub rows: Vec<HashMap<String, String>>,
+    pub row_count: usize,
 }
 
 #[derive(Clone)]
@@ -302,6 +312,51 @@ fn load_sheet_rows(
 
     let row_iter = rows_statement
         .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+
+    let mut raw_rows = Vec::new();
+    for row_result in row_iter {
+        let row_json = row_result.map_err(|err| err.to_string())?;
+        let row = serde_json::from_str::<Vec<String>>(&row_json).map_err(|err| err.to_string())?;
+        raw_rows.push(row);
+    }
+
+    Ok(raw_rows)
+}
+
+fn load_sheet_rows_page(
+    conn: &Connection,
+    dataset_id: &str,
+    sheet_name: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<Vec<String>>, String> {
+    let mut meta_statement = conn
+        .prepare(
+            r#"
+            SELECT table_name
+            FROM dataset_sheets
+            WHERE dataset_id = ? AND sheet_name = ?
+            "#,
+        )
+        .map_err(|err| err.to_string())?;
+
+    let table_name: String = meta_statement
+        .query_row(params![dataset_id, sheet_name], |row| row.get(0))
+        .map_err(|err| err.to_string())?;
+
+    if table_name.trim().is_empty() {
+        return Err("目标 Sheet 尚未物化缓存。".to_string());
+    }
+
+    let mut rows_statement = conn
+        .prepare(&format!(
+            r#"SELECT row_json FROM "{table_name}" ORDER BY row_index ASC LIMIT ? OFFSET ?"#
+        ))
+        .map_err(|err| err.to_string())?;
+
+    let row_iter = rows_statement
+        .query_map(params![limit as i64, offset as i64], |row| row.get::<_, String>(0))
         .map_err(|err| err.to_string())?;
 
     let mut raw_rows = Vec::new();
@@ -1189,5 +1244,81 @@ pub fn read_dataset_sheet_rows(
         raw_rows,
         row_count,
         data_mode: "full".to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn read_dataset_sheet_page(
+    app: AppHandle,
+    dataset_id: String,
+    sheet_name: String,
+    header_row_index: usize,
+    group_header_row_index: usize,
+    offset: usize,
+    limit: usize,
+) -> Result<DatasetSheetPageResult, String> {
+    let mut conn = open_dataset_db(&app)?;
+    ensure_schema(&conn)?;
+    ensure_materialized_sheet(&app, &mut conn, &dataset_id, &sheet_name)?;
+
+    let mut statement = conn
+        .prepare(
+            r#"
+            SELECT header_rows_json, row_count
+            FROM dataset_sheets
+            WHERE dataset_id = ? AND sheet_name = ?
+            "#,
+        )
+        .map_err(|err| err.to_string())?;
+
+    let (header_rows_json, total_row_count): (String, i64) = statement
+        .query_row(params![dataset_id.as_str(), sheet_name.as_str()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|err| err.to_string())?;
+
+    let header_rows =
+        serde_json::from_str::<Vec<Vec<String>>>(&header_rows_json).map_err(|err| err.to_string())?;
+    let normalized_header_row_index = header_row_index.max(1);
+    let columns = build_process_columns(
+        &header_rows,
+        normalized_header_row_index,
+        group_header_row_index,
+        "",
+    );
+    let headers = columns
+        .iter()
+        .map(|column| column.header.clone())
+        .collect::<Vec<_>>();
+
+    let data_row_count = (total_row_count.max(0) as usize).saturating_sub(normalized_header_row_index);
+    let normalized_limit = limit.max(1);
+    let raw_rows = load_sheet_rows_page(
+        &conn,
+        &dataset_id,
+        &sheet_name,
+        normalized_header_row_index + offset,
+        normalized_limit,
+    )?;
+
+    let rows = raw_rows
+        .iter()
+        .map(|row| {
+            let mut normalized = HashMap::new();
+            for column in &columns {
+                normalized.insert(
+                    column.header.clone(),
+                    get_text_row_value(row, column.source_index),
+                );
+            }
+            normalized
+        })
+        .collect::<Vec<_>>();
+
+    Ok(DatasetSheetPageResult {
+        name: sheet_name,
+        headers,
+        rows,
+        row_count: data_row_count,
     })
 }
