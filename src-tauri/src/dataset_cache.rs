@@ -251,22 +251,6 @@ fn get_text_row_value(row: &[String], index: usize) -> String {
         .unwrap_or_default()
 }
 
-fn read_header_context_rows(range: &Range<Data>) -> Result<String, String> {
-    let mut header_rows = Vec::new();
-    for row in range.rows() {
-        let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
-        if values.iter().all(|value| value.is_empty()) {
-            continue;
-        }
-        header_rows.push(values);
-        if header_rows.len() >= HEADER_CONTEXT_ROW_LIMIT {
-            break;
-        }
-    }
-
-    serde_json::to_string(&header_rows).map_err(|err| err.to_string())
-}
-
 fn insert_sheet_range(
     conn: &mut Connection,
     table_name: &str,
@@ -780,6 +764,47 @@ fn detect_source_format(file_path: &str, file_name: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+fn should_force_xlsx_fallback(file_path: &str, file_name: &str) -> bool {
+    cfg!(target_os = "windows") && detect_source_format(file_path, file_name) == "xlsx"
+}
+
+fn collect_range_rows(range: &Range<Data>) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    for row in range.rows() {
+        let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
+        if values.iter().all(|value| value.is_empty()) {
+            continue;
+        }
+        rows.push(values);
+    }
+    rows
+}
+
+fn read_sheet_rows_from_path(file_path: &str, sheet_name: &str) -> Result<Vec<Vec<String>>, String> {
+    let normalized_path = file_path.trim();
+    let file_name = Path::new(normalized_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(normalized_path);
+
+    if should_force_xlsx_fallback(normalized_path, file_name) {
+        let workbook = xlsx_fallback::read_xlsx_from_path(Path::new(normalized_path))?;
+        let sheet = workbook
+            .sheets
+            .into_iter()
+            .find(|sheet| sheet.name == sheet_name)
+            .ok_or_else(|| format!("未找到工作表：{}", sheet_name))?;
+        return Ok(sheet.rows);
+    }
+
+    let mut workbook =
+        open_workbook_auto(Path::new(normalized_path)).map_err(|err| err.to_string())?;
+    let range = workbook
+        .worksheet_range(sheet_name)
+        .map_err(|err| err.to_string())?;
+    Ok(collect_range_rows(&range))
+}
+
 fn resolve_sheet_csv_cache_path(
     app: &AppHandle,
     dataset_id: &str,
@@ -800,23 +825,13 @@ fn export_sheet_to_csv(
     sheet_name: &str,
     target_csv_path: &Path,
 ) -> Result<(), String> {
-    let mut workbook =
-        open_workbook_auto(Path::new(source_file_path)).map_err(|err| err.to_string())?;
-    let range = workbook
-        .worksheet_range(sheet_name)
-        .map_err(|err| err.to_string())?;
-
     let mut writer = WriterBuilder::new()
         .has_headers(false)
         .from_path(target_csv_path)
         .map_err(|err| err.to_string())?;
 
-    for row in range.rows() {
-        let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
-        if values.iter().all(|value| value.is_empty()) {
-            continue;
-        }
-        writer.write_record(values).map_err(|err| err.to_string())?;
+    for row in read_sheet_rows_from_path(source_file_path, sheet_name)? {
+        writer.write_record(row).map_err(|err| err.to_string())?;
     }
 
     writer.flush().map_err(|err| err.to_string())
@@ -894,20 +909,12 @@ fn parse_sheet_header_from_path(
     file_path: &str,
     sheet_name: &str,
 ) -> Result<(Vec<Vec<String>>, usize), String> {
-    let mut workbook = open_workbook_auto(Path::new(file_path)).map_err(|err| err.to_string())?;
-    let range = workbook
-        .worksheet_range(sheet_name)
-        .map_err(|err| err.to_string())?;
-
+    let rows = read_sheet_rows_from_path(file_path, sheet_name)?;
     let mut header_rows = Vec::new();
     let mut column_count = 0usize;
-    for row in range.rows() {
-        let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
-        if values.iter().all(|value| value.is_empty()) {
-            continue;
-        }
-        column_count = column_count.max(values.len());
-        header_rows.push(values);
+    for row in rows {
+        column_count = column_count.max(row.len());
+        header_rows.push(row);
         if header_rows.len() >= HEADER_CONTEXT_ROW_LIMIT {
             break;
         }
@@ -939,13 +946,10 @@ fn ensure_materialized_sheet(
     }
 
     let file_path = get_dataset_file_path(conn, dataset_id)?;
-    let mut workbook = open_workbook_auto(Path::new(&file_path)).map_err(|err| err.to_string())?;
-    let range = workbook
-        .worksheet_range(sheet_name)
-        .map_err(|err| err.to_string())?;
     let next_table_name = sanitize_table_name(&format!("dataset_{}_sheet_cache_{}", dataset_id, sheet_name));
+    let rows = read_sheet_rows_from_path(&file_path, sheet_name)?;
     let (row_count, column_count, header_rows_json, preview_rows_json) =
-        insert_sheet_range(conn, &next_table_name, &range)?;
+        insert_sheet_rows(conn, &next_table_name, &rows)?;
 
     conn.execute(
         r#"
@@ -1178,22 +1182,7 @@ pub(crate) fn build_python_payload_for_dataset(
 fn load_process_rows_from_path(file_path: &str, sheet_name: &str) -> Result<Vec<Vec<String>>, String> {
     let source_format = detect_source_format(file_path, file_path);
     match source_format.as_str() {
-        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" => {
-            let mut workbook =
-                open_workbook_auto(Path::new(file_path)).map_err(|err| err.to_string())?;
-            let range = workbook
-                .worksheet_range(sheet_name)
-                .map_err(|err| err.to_string())?;
-            let mut rows = Vec::new();
-            for row in range.rows() {
-                let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
-                if values.iter().all(|value| value.is_empty()) {
-                    continue;
-                }
-                rows.push(values);
-            }
-            Ok(rows)
-        }
+        "xlsx" | "xls" | "xlsm" | "xlsb" | "ods" => read_sheet_rows_from_path(file_path, sheet_name),
         "csv" => load_csv_rows(Path::new(file_path)),
         _ => Err(format!("当前文件格式暂不支持按路径直接处理：{}", source_format)),
     }
@@ -1285,6 +1274,19 @@ pub fn import_spreadsheet_dataset_from_path(
             .unwrap_or_else(|| normalized_path.to_string());
         let source_format = detect_source_format(normalized_path, &file_name);
 
+        if should_force_xlsx_fallback(normalized_path, &file_name) {
+            let workbook = xlsx_fallback::read_xlsx_from_path(path)?;
+            let mut conn = open_dataset_db(&app)?;
+            return import_fallback_workbook_eager(
+                &mut conn,
+                &workbook,
+                &dataset_id,
+                &file_name,
+                "",
+                imported_at_ms,
+            );
+        }
+
         let primary_result = guard_spreadsheet_operation("import_spreadsheet_dataset_from_path", || {
             let mut workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
             let mut conn = open_dataset_db(&app)?;
@@ -1340,6 +1342,25 @@ pub fn inspect_spreadsheet_from_path(file_path: String) -> Result<DatasetImportR
             .unwrap_or_else(|| normalized_path.to_string());
         let imported_at_ms = current_timestamp_ms()?;
         let source_format = detect_source_format(normalized_path, &file_name);
+
+        if should_force_xlsx_fallback(normalized_path, &file_name) {
+            let workbook = xlsx_fallback::read_xlsx_from_path(path)?;
+            return Ok(DatasetImportResult {
+                dataset_id: String::new(),
+                file_name,
+                imported_at_ms,
+                sheets: workbook
+                    .sheets
+                    .iter()
+                    .map(|sheet| DatasetSheetSummary {
+                        name: sheet.name.clone(),
+                        row_count: sheet.rows.len(),
+                        column_count: sheet.rows.iter().map(|row| row.len()).max().unwrap_or(0),
+                        preview_row_count: sheet.rows.len().min(PREVIEW_ROW_LIMIT),
+                    })
+                    .collect(),
+            });
+        }
 
         let primary_result = guard_spreadsheet_operation("inspect_spreadsheet_from_path", || {
             let workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
@@ -1404,6 +1425,7 @@ pub fn read_spreadsheet_sheet_header_from_path(
             if normalized_path.is_empty() {
                 return Err("源文件路径不能为空。".to_string());
             }
+
             let (header_rows, _) = parse_sheet_header_from_path(normalized_path, &sheet_name)?;
             Ok(DatasetSheetRowsResult {
                 name: sheet_name,
@@ -1453,25 +1475,22 @@ pub fn read_dataset_sheet_preview(
         }
 
         let file_path = get_dataset_file_path(&conn, &dataset_id)?;
-        let mut workbook = open_workbook_auto(Path::new(&file_path)).map_err(|err| err.to_string())?;
-        let range = workbook
-            .worksheet_range(&sheet_name)
-            .map_err(|err| err.to_string())?;
-        let header_rows_json = read_header_context_rows(&range)?;
+        let rows = read_sheet_rows_from_path(&file_path, &sheet_name)?;
         let mut preview_rows = Vec::new();
         let mut actual_row_count = 0usize;
         let mut column_count = 0usize;
-        for row in range.rows() {
-            let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
-            if values.iter().all(|value| value.is_empty()) {
-                continue;
-            }
-            column_count = column_count.max(values.len());
+        let mut header_rows = Vec::new();
+        for row in rows {
+            column_count = column_count.max(row.len());
             actual_row_count += 1;
+            if header_rows.len() < HEADER_CONTEXT_ROW_LIMIT {
+                header_rows.push(row.clone());
+            }
             if preview_rows.len() < PREVIEW_ROW_LIMIT {
-                preview_rows.push(values);
+                preview_rows.push(row);
             }
         }
+        let header_rows_json = serde_json::to_string(&header_rows).map_err(|err| err.to_string())?;
         let preview_rows_json = serde_json::to_string(&preview_rows).map_err(|err| err.to_string())?;
         conn.execute(
             r#"
