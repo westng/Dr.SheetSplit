@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::HashSet,
     env, fs,
     io::Write,
@@ -50,6 +51,16 @@ fn log_command_error(context: &str, error: impl AsRef<str>) -> String {
     let message = error.as_ref().to_string();
     app_logger::error_with_context(context, &message);
     message
+}
+
+fn panic_payload_text(payload: Box<dyn Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "unknown panic payload".to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -489,7 +500,14 @@ async fn start_source_inspect_job(
                 return;
             }
             Err(error) => {
-                app_logger::error_with_context("start_source_inspect_job/import_spreadsheet_dataset_from_path_join", error.to_string());
+                let detail = match error {
+                    tauri::Error::JoinError(join_error) if join_error.is_panic() => {
+                        let panic_text = panic_payload_text(join_error.into_panic());
+                        format!("spawn_blocking panic: {panic_text}")
+                    }
+                    other => other.to_string(),
+                };
+                app_logger::error_with_context("start_source_inspect_job/import_spreadsheet_dataset_from_path_join", &detail);
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -499,7 +517,7 @@ async fn start_source_inspect_job(
                         sheet_name: String::new(),
                         preview: None,
                         header: None,
-                        error: Some(error.to_string()),
+                        error: Some(detail),
                     },
                 );
                 return;
@@ -572,7 +590,14 @@ async fn start_source_inspect_job(
                 );
             }
             Err(error) => {
-                app_logger::error_with_context("start_source_inspect_job/read_dataset_sheet_header_join", error.to_string());
+                let detail = match error {
+                    tauri::Error::JoinError(join_error) if join_error.is_panic() => {
+                        let panic_text = panic_payload_text(join_error.into_panic());
+                        format!("spawn_blocking panic: {panic_text}")
+                    }
+                    other => other.to_string(),
+                };
+                app_logger::error_with_context("start_source_inspect_job/read_dataset_sheet_header_join", &detail);
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -582,7 +607,7 @@ async fn start_source_inspect_job(
                         sheet_name: resolved_sheet_name,
                         preview: Some(preview),
                         header: None,
-                        error: Some(error.to_string()),
+                        error: Some(detail),
                     },
                 );
             }
