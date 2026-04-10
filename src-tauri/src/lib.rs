@@ -3,6 +3,7 @@ use std::{
     collections::HashSet,
     env, fs,
     io::Write,
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -61,6 +62,21 @@ fn panic_payload_text(payload: Box<dyn Any + Send>) -> String {
         return text.clone();
     }
     "unknown panic payload".to_string()
+}
+
+fn catch_panic_result<T>(
+    context: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let panic_text = panic_payload_text(payload);
+            let message = format!("background task panic: {panic_text}");
+            app_logger::error_with_context(context, &message);
+            Err(message)
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -478,7 +494,10 @@ async fn start_source_inspect_job(
         let preview_result = spawn_blocking({
             let app_handle = app_handle.clone();
             let file_path = normalized_file_path.clone();
-            move || dataset_cache::import_spreadsheet_dataset_from_path(app_handle, file_path)
+            move || catch_panic_result(
+                "start_source_inspect_job/import_spreadsheet_dataset_from_path_task",
+                || dataset_cache::import_spreadsheet_dataset_from_path(app_handle, file_path),
+            )
         }).await;
 
         let preview = match preview_result {
@@ -556,7 +575,10 @@ async fn start_source_inspect_job(
         let header_result = spawn_blocking({
             let app_handle = app_handle.clone();
             let sheet_name = resolved_sheet_name.clone();
-            move || dataset_cache::read_dataset_sheet_header(app_handle, dataset_id, sheet_name)
+            move || catch_panic_result(
+                "start_source_inspect_job/read_dataset_sheet_header_task",
+                || dataset_cache::read_dataset_sheet_header(app_handle, dataset_id, sheet_name),
+            )
         }).await;
 
         match header_result {
@@ -623,7 +645,13 @@ async fn run_engine_process_task(
     input: engine_backend::BackendEngineProcessTaskInput,
 ) -> Result<engine_backend::BackendEngineProcessTaskResult, String> {
     let app_handle = app.clone();
-    match spawn_blocking(move || engine_backend::run_engine_process_task(&app_handle, input)).await {
+    match spawn_blocking(move || {
+        catch_panic_result("run_engine_process_task_task", || {
+            engine_backend::run_engine_process_task(&app_handle, input)
+        })
+    })
+    .await
+    {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(error)) => Err(log_command_error("run_engine_process_task", error)),
         Err(error) => Err(log_command_error("run_engine_process_task_join", error.to_string())),
