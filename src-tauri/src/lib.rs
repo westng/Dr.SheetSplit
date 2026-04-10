@@ -15,6 +15,7 @@ use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 mod app_logger;
 mod dataset_cache;
 mod engine_backend;
+mod xlsx_fallback;
 
 const SLOGAN_API_URL: &str =
     "https://api.southerly.top/api/yiyan?msg=%E8%AF%97%E8%AF%8D&output=json";

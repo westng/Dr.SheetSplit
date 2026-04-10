@@ -1301,6 +1301,7 @@ dependencies = [
  "calamine",
  "csv",
  "duckdb",
+ "quick-xml 0.38.4",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

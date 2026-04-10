@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::app_logger;
+use crate::{app_logger, xlsx_fallback};
 
 const HEADER_CONTEXT_ROW_LIMIT: usize = 8;
 const PREVIEW_ROW_LIMIT: usize = 64;
@@ -324,6 +324,62 @@ fn insert_sheet_range(
     Ok((row_count, column_count, header_rows_json, preview_rows_json))
 }
 
+fn insert_sheet_rows(
+    conn: &mut Connection,
+    table_name: &str,
+    rows: &[Vec<String>],
+) -> Result<(usize, usize, String, String), String> {
+    conn.execute_batch(&format!(
+        r#"
+        CREATE TABLE "{table_name}" (
+          row_index BIGINT NOT NULL,
+          row_json VARCHAR NOT NULL
+        );
+        "#
+    ))
+    .map_err(|err| err.to_string())?;
+
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    let (row_count, column_count, header_rows_json, preview_rows_json) = {
+        let mut statement = tx
+            .prepare(&format!(
+                r#"INSERT INTO "{table_name}" (row_index, row_json) VALUES (?, ?)"#
+            ))
+            .map_err(|err| err.to_string())?;
+
+        let mut row_count = 0usize;
+        let mut column_count = 0usize;
+        let mut header_rows = Vec::new();
+        let mut preview_rows = Vec::new();
+
+        for row in rows {
+            if row.iter().all(|value| value.trim().is_empty()) {
+                continue;
+            }
+            column_count = column_count.max(row.len());
+            if header_rows.len() < HEADER_CONTEXT_ROW_LIMIT {
+                header_rows.push(row.clone());
+            }
+            if preview_rows.len() < PREVIEW_ROW_LIMIT {
+                preview_rows.push(row.clone());
+            }
+            let row_json = serde_json::to_string(row).map_err(|err| err.to_string())?;
+            statement
+                .execute(params![row_count as i64, row_json])
+                .map_err(|err| err.to_string())?;
+            row_count += 1;
+        }
+
+        let header_rows_json =
+            serde_json::to_string(&header_rows).map_err(|err| err.to_string())?;
+        let preview_rows_json =
+            serde_json::to_string(&preview_rows).map_err(|err| err.to_string())?;
+        (row_count, column_count, header_rows_json, preview_rows_json)
+    };
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok((row_count, column_count, header_rows_json, preview_rows_json))
+}
+
 fn load_sheet_rows(
     conn: &Connection,
     dataset_id: &str,
@@ -581,6 +637,99 @@ where
             row_count: 0,
             column_count: 0,
             preview_row_count: 0,
+        });
+    }
+
+    Ok(DatasetImportResult {
+        dataset_id: dataset_id.to_string(),
+        file_name: file_name.to_string(),
+        imported_at_ms,
+        sheets,
+    })
+}
+
+fn import_fallback_workbook_eager(
+    conn: &mut Connection,
+    workbook: &xlsx_fallback::FallbackWorkbook,
+    dataset_id: &str,
+    file_name: &str,
+    file_path: &str,
+    imported_at_ms: u64,
+) -> Result<DatasetImportResult, String> {
+    ensure_schema(conn)?;
+
+    let mut sheet_metas = Vec::with_capacity(workbook.sheets.len());
+    let mut total_row_count = 0usize;
+
+    for (sheet_index, sheet) in workbook.sheets.iter().enumerate() {
+        let table_name =
+            sanitize_table_name(&format!("dataset_{}_sheet_{}", dataset_id, sheet_index));
+        let (row_count, column_count, header_rows_json, preview_rows_json) =
+            insert_sheet_rows(conn, &table_name, &sheet.rows)?;
+        total_row_count += row_count;
+        sheet_metas.push(ImportedSheetMeta {
+            name: sheet.name.clone(),
+            row_count,
+            column_count,
+            header_rows_json,
+            preview_row_count: row_count.min(PREVIEW_ROW_LIMIT),
+            preview_rows_json,
+            table_name,
+        });
+    }
+
+    conn.execute(
+        r#"
+        INSERT INTO datasets (dataset_id, file_name, file_path, imported_at_ms, sheet_count, total_row_count)
+        VALUES (?, ?, ?, ?, ?, ?)
+        "#,
+        params![
+            dataset_id,
+            file_name,
+            file_path,
+            imported_at_ms as i64,
+            sheet_metas.len() as i64,
+            total_row_count as i64
+        ],
+    )
+    .map_err(|err| err.to_string())?;
+
+    let mut sheets = Vec::with_capacity(sheet_metas.len());
+    for (sheet_index, sheet) in sheet_metas.iter().enumerate() {
+        conn.execute(
+            r#"
+            INSERT INTO dataset_sheets (
+              dataset_id,
+              sheet_name,
+              sheet_index,
+              row_count,
+              column_count,
+              header_rows_json,
+              preview_row_count,
+              preview_rows_json,
+              table_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+            params![
+                dataset_id,
+                sheet.name.as_str(),
+                sheet_index as i64,
+                sheet.row_count as i64,
+                sheet.column_count as i64,
+                sheet.header_rows_json.as_str(),
+                sheet.preview_row_count as i64,
+                sheet.preview_rows_json.as_str(),
+                sheet.table_name.as_str(),
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+
+        sheets.push(DatasetSheetSummary {
+            name: sheet.name.clone(),
+            row_count: sheet.row_count,
+            column_count: sheet.column_count,
+            preview_row_count: sheet.preview_row_count,
         });
     }
 
@@ -1121,20 +1270,22 @@ pub fn import_spreadsheet_dataset_from_path(
     file_path: String,
 ) -> Result<DatasetImportResult, String> {
     log_command_result("import_spreadsheet_dataset_from_path", (|| {
-        guard_spreadsheet_operation("import_spreadsheet_dataset_from_path", || {
-            let normalized_path = file_path.trim();
-            if normalized_path.is_empty() {
-                return Err("导入文件路径不能为空。".to_string());
-            }
+        let normalized_path = file_path.trim();
+        if normalized_path.is_empty() {
+            return Err("导入文件路径不能为空。".to_string());
+        }
 
-            let dataset_id = next_dataset_id()?;
-            let imported_at_ms = current_timestamp_ms()?;
-            let path = Path::new(normalized_path);
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.to_string())
-                .unwrap_or_else(|| normalized_path.to_string());
+        let dataset_id = next_dataset_id()?;
+        let imported_at_ms = current_timestamp_ms()?;
+        let path = Path::new(normalized_path);
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| normalized_path.to_string());
+        let source_format = detect_source_format(normalized_path, &file_name);
+
+        let primary_result = guard_spreadsheet_operation("import_spreadsheet_dataset_from_path", || {
             let mut workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
             let mut conn = open_dataset_db(&app)?;
             import_workbook_lazy(
@@ -1145,26 +1296,52 @@ pub fn import_spreadsheet_dataset_from_path(
                 normalized_path,
                 imported_at_ms,
             )
-        })
+        });
+
+        match primary_result {
+            Ok(result) => Ok(result),
+            Err(primary_error) => {
+                if cfg!(target_os = "windows") && source_format == "xlsx" {
+                    app_logger::warn(format!(
+                        "import_spreadsheet_dataset_from_path primary parser failed, trying fallback parser: {}",
+                        primary_error
+                    ));
+                    let workbook = xlsx_fallback::read_xlsx_from_path(path)?;
+                    let mut conn = open_dataset_db(&app)?;
+                    // Clear file_path so later processing uses cached sheet rows instead of reopening the source workbook.
+                    return import_fallback_workbook_eager(
+                        &mut conn,
+                        &workbook,
+                        &dataset_id,
+                        &file_name,
+                        "",
+                        imported_at_ms,
+                    );
+                }
+                Err(primary_error)
+            }
+        }
     })())
 }
 
 #[tauri::command]
 pub fn inspect_spreadsheet_from_path(file_path: String) -> Result<DatasetImportResult, String> {
     log_command_result("inspect_spreadsheet_from_path", (|| {
-        guard_spreadsheet_operation("inspect_spreadsheet_from_path", || {
-            let normalized_path = file_path.trim();
-            if normalized_path.is_empty() {
-                return Err("导入文件路径不能为空。".to_string());
-            }
+        let normalized_path = file_path.trim();
+        if normalized_path.is_empty() {
+            return Err("导入文件路径不能为空。".to_string());
+        }
 
-            let path = Path::new(normalized_path);
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.to_string())
-                .unwrap_or_else(|| normalized_path.to_string());
-            let imported_at_ms = current_timestamp_ms()?;
+        let path = Path::new(normalized_path);
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| normalized_path.to_string());
+        let imported_at_ms = current_timestamp_ms()?;
+        let source_format = detect_source_format(normalized_path, &file_name);
+
+        let primary_result = guard_spreadsheet_operation("inspect_spreadsheet_from_path", || {
             let workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
             let sheets = workbook
                 .sheet_names()
@@ -1179,11 +1356,40 @@ pub fn inspect_spreadsheet_from_path(file_path: String) -> Result<DatasetImportR
 
             Ok(DatasetImportResult {
                 dataset_id: String::new(),
-                file_name,
+                file_name: file_name.clone(),
                 imported_at_ms,
                 sheets,
             })
-        })
+        });
+
+        match primary_result {
+            Ok(result) => Ok(result),
+            Err(primary_error) => {
+                if cfg!(target_os = "windows") && source_format == "xlsx" {
+                    app_logger::warn(format!(
+                        "inspect_spreadsheet_from_path primary parser failed, trying fallback parser: {}",
+                        primary_error
+                    ));
+                    let workbook = xlsx_fallback::read_xlsx_from_path(path)?;
+                    return Ok(DatasetImportResult {
+                        dataset_id: String::new(),
+                        file_name,
+                        imported_at_ms,
+                        sheets: workbook
+                            .sheets
+                            .iter()
+                            .map(|sheet| DatasetSheetSummary {
+                                name: sheet.name.clone(),
+                                row_count: sheet.rows.len(),
+                                column_count: sheet.rows.iter().map(|row| row.len()).max().unwrap_or(0),
+                                preview_row_count: sheet.rows.len().min(PREVIEW_ROW_LIMIT),
+                            })
+                            .collect(),
+                    });
+                }
+                Err(primary_error)
+            }
+        }
     })())
 }
 
