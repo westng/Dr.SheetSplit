@@ -1,7 +1,9 @@
 use std::{
+    any::Any,
     fs,
     io::Cursor,
     io::{Read, Seek},
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -15,6 +17,8 @@ use duckdb::{params, Connection};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
+
+use crate::app_logger;
 
 const HEADER_CONTEXT_ROW_LIMIT: usize = 8;
 const PREVIEW_ROW_LIMIT: usize = 64;
@@ -92,6 +96,45 @@ fn emit_process_log(app: &AppHandle, message: impl Into<String>) {
             message: message.into(),
         },
     );
+}
+
+fn log_command_result<T>(context: &str, result: Result<T, String>) -> Result<T, String> {
+    result.map_err(|error| {
+        app_logger::error_with_context(context, &error);
+        error
+    })
+}
+
+fn panic_payload_to_text(payload: Box<dyn Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "unknown panic payload".to_string()
+}
+
+fn spreadsheet_panic_user_message() -> String {
+    if cfg!(target_os = "windows") {
+        "当前文件在 Windows 环境解析时发生异常，请先用 Excel 或 WPS 将文件另存为标准 .xlsx 后重试。".to_string()
+    } else {
+        "当前文件解析时发生异常，请尝试将文件另存为标准 .xlsx 后重试。".to_string()
+    }
+}
+
+fn guard_spreadsheet_operation<T>(
+    context: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(payload) => {
+            let panic_text = panic_payload_to_text(payload);
+            app_logger::error_with_context(context, format!("spreadsheet parser panic: {panic_text}"));
+            Err(spreadsheet_panic_user_message())
+        }
+    }
 }
 
 fn next_dataset_id() -> Result<String, String> {
@@ -784,60 +827,62 @@ pub fn read_dataset_sheet_header(
     dataset_id: String,
     sheet_name: String,
 ) -> Result<DatasetSheetRowsResult, String> {
-    let conn = open_dataset_db(&app)?;
-    ensure_schema(&conn)?;
+    log_command_result("read_dataset_sheet_header", guard_spreadsheet_operation("read_dataset_sheet_header", || {
+        let conn = open_dataset_db(&app)?;
+        ensure_schema(&conn)?;
 
-    let mut statement = conn
-        .prepare(
+        let mut statement = conn
+            .prepare(
+                r#"
+                SELECT header_rows_json, column_count
+                FROM dataset_sheets
+                WHERE dataset_id = ? AND sheet_name = ?
+                "#,
+            )
+            .map_err(|err| err.to_string())?;
+
+        let (header_rows_json, column_count): (String, i64) = statement
+            .query_row(params![dataset_id.as_str(), sheet_name.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|err| err.to_string())?;
+
+        if header_rows_json != "[]" || column_count > 0 {
+            let raw_rows =
+                serde_json::from_str::<Vec<Vec<String>>>(&header_rows_json).map_err(|err| err.to_string())?;
+            return Ok(DatasetSheetRowsResult {
+                name: sheet_name,
+                raw_rows,
+                row_count: 0,
+                data_mode: "header".to_string(),
+            });
+        }
+
+        let file_path = get_dataset_file_path(&conn, &dataset_id)?;
+        let (header_rows, actual_column_count) = parse_sheet_header_from_path(&file_path, &sheet_name)?;
+        let header_rows_json = serde_json::to_string(&header_rows).map_err(|err| err.to_string())?;
+        conn.execute(
             r#"
-            SELECT header_rows_json, column_count
-            FROM dataset_sheets
+            UPDATE dataset_sheets
+            SET column_count = ?, header_rows_json = ?
             WHERE dataset_id = ? AND sheet_name = ?
             "#,
+            params![
+                actual_column_count as i64,
+                header_rows_json,
+                dataset_id.as_str(),
+                sheet_name.as_str()
+            ],
         )
         .map_err(|err| err.to_string())?;
 
-    let (header_rows_json, column_count): (String, i64) = statement
-        .query_row(params![dataset_id.as_str(), sheet_name.as_str()], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .map_err(|err| err.to_string())?;
-
-    if header_rows_json != "[]" || column_count > 0 {
-        let raw_rows =
-            serde_json::from_str::<Vec<Vec<String>>>(&header_rows_json).map_err(|err| err.to_string())?;
-        return Ok(DatasetSheetRowsResult {
+        Ok(DatasetSheetRowsResult {
             name: sheet_name,
-            raw_rows,
+            raw_rows: header_rows,
             row_count: 0,
             data_mode: "header".to_string(),
-        });
-    }
-
-    let file_path = get_dataset_file_path(&conn, &dataset_id)?;
-    let (header_rows, actual_column_count) = parse_sheet_header_from_path(&file_path, &sheet_name)?;
-    let header_rows_json = serde_json::to_string(&header_rows).map_err(|err| err.to_string())?;
-    conn.execute(
-        r#"
-        UPDATE dataset_sheets
-        SET column_count = ?, header_rows_json = ?
-        WHERE dataset_id = ? AND sheet_name = ?
-        "#,
-        params![
-            actual_column_count as i64,
-            header_rows_json,
-            dataset_id.as_str(),
-            sheet_name.as_str()
-        ],
-    )
-    .map_err(|err| err.to_string())?;
-
-    Ok(DatasetSheetRowsResult {
-        name: sheet_name,
-        raw_rows: header_rows,
-        row_count: 0,
-        data_mode: "header".to_string(),
-    })
+        })
+    }))
 }
 
 fn build_process_columns(
@@ -941,42 +986,44 @@ pub(crate) fn build_python_payload_for_dataset(
     dataset_id: &str,
     sheet_name: &str,
 ) -> Result<String, String> {
-    let mut payload = serde_json::from_str::<Value>(base_payload).map_err(|err| err.to_string())?;
-    let payload_object = payload
-        .as_object_mut()
-        .ok_or_else(|| "处理引擎入参不是合法对象。".to_string())?;
-    let rule = payload_object
-        .get("rule")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "处理引擎入参缺少规则配置。".to_string())?;
+    guard_spreadsheet_operation("build_python_payload_for_dataset", || {
+        let mut payload = serde_json::from_str::<Value>(base_payload).map_err(|err| err.to_string())?;
+        let payload_object = payload
+            .as_object_mut()
+            .ok_or_else(|| "处理引擎入参不是合法对象。".to_string())?;
+        let rule = payload_object
+            .get("rule")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "处理引擎入参缺少规则配置。".to_string())?;
 
-    let header_row_index = rule
-        .get("sourceHeaderRowIndex")
-        .and_then(Value::as_u64)
-        .unwrap_or(1) as usize;
-    let group_header_row_index = rule
-        .get("sourceGroupHeaderRowIndex")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
-    let group_name = rule
-        .get("sourceGroupName")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+        let header_row_index = rule
+            .get("sourceHeaderRowIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or(1) as usize;
+        let group_header_row_index = rule
+            .get("sourceGroupHeaderRowIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let group_name = rule
+            .get("sourceGroupName")
+            .and_then(Value::as_str)
+            .unwrap_or("");
 
-    let mut conn = open_dataset_db(app)?;
-    ensure_schema(&conn)?;
-    emit_process_log(app, "正在处理数据...");
-    let raw_rows = load_process_rows(app, &mut conn, dataset_id, sheet_name)?;
-    emit_process_log(app, "正在构建处理数据载荷...");
-    let sheet_value = build_process_sheet_value(
-        &raw_rows,
-        sheet_name,
-        header_row_index,
-        group_header_row_index,
-        group_name,
-    );
-    payload_object.insert("sheet".to_string(), sheet_value);
-    serde_json::to_string(&payload).map_err(|err| err.to_string())
+        let mut conn = open_dataset_db(app)?;
+        ensure_schema(&conn)?;
+        emit_process_log(app, "正在处理数据...");
+        let raw_rows = load_process_rows(app, &mut conn, dataset_id, sheet_name)?;
+        emit_process_log(app, "正在构建处理数据载荷...");
+        let sheet_value = build_process_sheet_value(
+            &raw_rows,
+            sheet_name,
+            header_row_index,
+            group_header_row_index,
+            group_name,
+        );
+        payload_object.insert("sheet".to_string(), sheet_value);
+        serde_json::to_string(&payload).map_err(|err| err.to_string())
+    })
 }
 
 fn load_process_rows_from_path(file_path: &str, sheet_name: &str) -> Result<Vec<Vec<String>>, String> {
@@ -1009,40 +1056,42 @@ pub(crate) fn build_python_payload_for_path(
     file_path: &str,
     sheet_name: &str,
 ) -> Result<String, String> {
-    let mut payload = serde_json::from_str::<Value>(base_payload).map_err(|err| err.to_string())?;
-    let payload_object = payload
-        .as_object_mut()
-        .ok_or_else(|| "处理引擎入参不是合法对象。".to_string())?;
-    let rule = payload_object
-        .get("rule")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "处理引擎入参缺少规则配置。".to_string())?;
+    guard_spreadsheet_operation("build_python_payload_for_path", || {
+        let mut payload = serde_json::from_str::<Value>(base_payload).map_err(|err| err.to_string())?;
+        let payload_object = payload
+            .as_object_mut()
+            .ok_or_else(|| "处理引擎入参不是合法对象。".to_string())?;
+        let rule = payload_object
+            .get("rule")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "处理引擎入参缺少规则配置。".to_string())?;
 
-    let header_row_index = rule
-        .get("sourceHeaderRowIndex")
-        .and_then(Value::as_u64)
-        .unwrap_or(1) as usize;
-    let group_header_row_index = rule
-        .get("sourceGroupHeaderRowIndex")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
-    let group_name = rule
-        .get("sourceGroupName")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+        let header_row_index = rule
+            .get("sourceHeaderRowIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or(1) as usize;
+        let group_header_row_index = rule
+            .get("sourceGroupHeaderRowIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let group_name = rule
+            .get("sourceGroupName")
+            .and_then(Value::as_str)
+            .unwrap_or("");
 
-    emit_process_log(app, "正在按源文件路径读取处理数据...");
-    let raw_rows = load_process_rows_from_path(file_path, sheet_name)?;
-    emit_process_log(app, "正在构建处理数据载荷...");
-    let sheet_value = build_process_sheet_value(
-        &raw_rows,
-        sheet_name,
-        header_row_index,
-        group_header_row_index,
-        group_name,
-    );
-    payload_object.insert("sheet".to_string(), sheet_value);
-    serde_json::to_string(&payload).map_err(|err| err.to_string())
+        emit_process_log(app, "正在按源文件路径读取处理数据...");
+        let raw_rows = load_process_rows_from_path(file_path, sheet_name)?;
+        emit_process_log(app, "正在构建处理数据载荷...");
+        let sheet_value = build_process_sheet_value(
+            &raw_rows,
+            sheet_name,
+            header_row_index,
+            group_header_row_index,
+            group_name,
+        );
+        payload_object.insert("sheet".to_string(), sheet_value);
+        serde_json::to_string(&payload).map_err(|err| err.to_string())
+    })
 }
 
 #[tauri::command]
@@ -1051,15 +1100,19 @@ pub fn import_spreadsheet_dataset(
     file_name: String,
     content_base64: String,
 ) -> Result<DatasetImportResult, String> {
-    let dataset_id = next_dataset_id()?;
-    let imported_at_ms = current_timestamp_ms()?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(content_base64)
-        .map_err(|err| err.to_string())?;
-    let cursor = Cursor::new(bytes);
-    let mut workbook = open_workbook_auto_from_rs(cursor).map_err(|err| err.to_string())?;
-    let mut conn = open_dataset_db(&app)?;
-    import_workbook_eager(&mut conn, &mut workbook, &dataset_id, &file_name, "", imported_at_ms)
+    log_command_result("import_spreadsheet_dataset", (|| {
+        guard_spreadsheet_operation("import_spreadsheet_dataset", || {
+            let dataset_id = next_dataset_id()?;
+            let imported_at_ms = current_timestamp_ms()?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(content_base64)
+                .map_err(|err| err.to_string())?;
+            let cursor = Cursor::new(bytes);
+            let mut workbook = open_workbook_auto_from_rs(cursor).map_err(|err| err.to_string())?;
+            let mut conn = open_dataset_db(&app)?;
+            import_workbook_eager(&mut conn, &mut workbook, &dataset_id, &file_name, "", imported_at_ms)
+        })
+    })())
 }
 
 #[tauri::command]
@@ -1067,63 +1120,71 @@ pub fn import_spreadsheet_dataset_from_path(
     app: AppHandle,
     file_path: String,
 ) -> Result<DatasetImportResult, String> {
-    let normalized_path = file_path.trim();
-    if normalized_path.is_empty() {
-        return Err("导入文件路径不能为空。".to_string());
-    }
+    log_command_result("import_spreadsheet_dataset_from_path", (|| {
+        guard_spreadsheet_operation("import_spreadsheet_dataset_from_path", || {
+            let normalized_path = file_path.trim();
+            if normalized_path.is_empty() {
+                return Err("导入文件路径不能为空。".to_string());
+            }
 
-    let dataset_id = next_dataset_id()?;
-    let imported_at_ms = current_timestamp_ms()?;
-    let path = Path::new(normalized_path);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.to_string())
-        .unwrap_or_else(|| normalized_path.to_string());
-    let mut workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
-    let mut conn = open_dataset_db(&app)?;
-    import_workbook_lazy(
-        &mut conn,
-        &mut workbook,
-        &dataset_id,
-        &file_name,
-        normalized_path,
-        imported_at_ms,
-    )
+            let dataset_id = next_dataset_id()?;
+            let imported_at_ms = current_timestamp_ms()?;
+            let path = Path::new(normalized_path);
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| normalized_path.to_string());
+            let mut workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
+            let mut conn = open_dataset_db(&app)?;
+            import_workbook_lazy(
+                &mut conn,
+                &mut workbook,
+                &dataset_id,
+                &file_name,
+                normalized_path,
+                imported_at_ms,
+            )
+        })
+    })())
 }
 
 #[tauri::command]
 pub fn inspect_spreadsheet_from_path(file_path: String) -> Result<DatasetImportResult, String> {
-    let normalized_path = file_path.trim();
-    if normalized_path.is_empty() {
-        return Err("导入文件路径不能为空。".to_string());
-    }
+    log_command_result("inspect_spreadsheet_from_path", (|| {
+        guard_spreadsheet_operation("inspect_spreadsheet_from_path", || {
+            let normalized_path = file_path.trim();
+            if normalized_path.is_empty() {
+                return Err("导入文件路径不能为空。".to_string());
+            }
 
-    let path = Path::new(normalized_path);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.to_string())
-        .unwrap_or_else(|| normalized_path.to_string());
-    let imported_at_ms = current_timestamp_ms()?;
-    let workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
-    let sheets = workbook
-        .sheet_names()
-        .iter()
-        .map(|sheet_name| DatasetSheetSummary {
-            name: sheet_name.clone(),
-            row_count: 0,
-            column_count: 0,
-            preview_row_count: 0,
+            let path = Path::new(normalized_path);
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| normalized_path.to_string());
+            let imported_at_ms = current_timestamp_ms()?;
+            let workbook = open_workbook_auto(path).map_err(|err| err.to_string())?;
+            let sheets = workbook
+                .sheet_names()
+                .iter()
+                .map(|sheet_name| DatasetSheetSummary {
+                    name: sheet_name.clone(),
+                    row_count: 0,
+                    column_count: 0,
+                    preview_row_count: 0,
+                })
+                .collect::<Vec<_>>();
+
+            Ok(DatasetImportResult {
+                dataset_id: String::new(),
+                file_name,
+                imported_at_ms,
+                sheets,
+            })
         })
-        .collect::<Vec<_>>();
-
-    Ok(DatasetImportResult {
-        dataset_id: String::new(),
-        file_name,
-        imported_at_ms,
-        sheets,
-    })
+    })())
 }
 
 #[tauri::command]
@@ -1131,17 +1192,21 @@ pub fn read_spreadsheet_sheet_header_from_path(
     file_path: String,
     sheet_name: String,
 ) -> Result<DatasetSheetRowsResult, String> {
-    let normalized_path = file_path.trim();
-    if normalized_path.is_empty() {
-        return Err("源文件路径不能为空。".to_string());
-    }
-    let (header_rows, _) = parse_sheet_header_from_path(normalized_path, &sheet_name)?;
-    Ok(DatasetSheetRowsResult {
-        name: sheet_name,
-        raw_rows: header_rows,
-        row_count: 0,
-        data_mode: "header".to_string(),
-    })
+    log_command_result("read_spreadsheet_sheet_header_from_path", (|| {
+        guard_spreadsheet_operation("read_spreadsheet_sheet_header_from_path", || {
+            let normalized_path = file_path.trim();
+            if normalized_path.is_empty() {
+                return Err("源文件路径不能为空。".to_string());
+            }
+            let (header_rows, _) = parse_sheet_header_from_path(normalized_path, &sheet_name)?;
+            Ok(DatasetSheetRowsResult {
+                name: sheet_name,
+                raw_rows: header_rows,
+                row_count: 0,
+                data_mode: "header".to_string(),
+            })
+        })
+    })())
 }
 
 #[tauri::command]
@@ -1150,81 +1215,83 @@ pub fn read_dataset_sheet_preview(
     dataset_id: String,
     sheet_name: String,
 ) -> Result<DatasetSheetRowsResult, String> {
-    let conn = open_dataset_db(&app)?;
-    ensure_schema(&conn)?;
+    log_command_result("read_dataset_sheet_preview", guard_spreadsheet_operation("read_dataset_sheet_preview", || {
+        let conn = open_dataset_db(&app)?;
+        ensure_schema(&conn)?;
 
-    let mut statement = conn
-        .prepare(
+        let mut statement = conn
+            .prepare(
+                r#"
+                SELECT preview_rows_json, row_count
+                FROM dataset_sheets
+                WHERE dataset_id = ? AND sheet_name = ?
+                "#,
+            )
+            .map_err(|err| err.to_string())?;
+
+        let (preview_rows_json, row_count): (String, i64) = statement
+            .query_row(params![dataset_id.as_str(), sheet_name.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|err| err.to_string())?;
+
+        if preview_rows_json != "[]" || row_count > 0 {
+            let raw_rows =
+                serde_json::from_str::<Vec<Vec<String>>>(&preview_rows_json).map_err(|err| err.to_string())?;
+            return Ok(DatasetSheetRowsResult {
+                name: sheet_name,
+                raw_rows,
+                row_count: row_count.max(0) as usize,
+                data_mode: "preview".to_string(),
+            });
+        }
+
+        let file_path = get_dataset_file_path(&conn, &dataset_id)?;
+        let mut workbook = open_workbook_auto(Path::new(&file_path)).map_err(|err| err.to_string())?;
+        let range = workbook
+            .worksheet_range(&sheet_name)
+            .map_err(|err| err.to_string())?;
+        let header_rows_json = read_header_context_rows(&range)?;
+        let mut preview_rows = Vec::new();
+        let mut actual_row_count = 0usize;
+        let mut column_count = 0usize;
+        for row in range.rows() {
+            let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
+            if values.iter().all(|value| value.is_empty()) {
+                continue;
+            }
+            column_count = column_count.max(values.len());
+            actual_row_count += 1;
+            if preview_rows.len() < PREVIEW_ROW_LIMIT {
+                preview_rows.push(values);
+            }
+        }
+        let preview_rows_json = serde_json::to_string(&preview_rows).map_err(|err| err.to_string())?;
+        conn.execute(
             r#"
-            SELECT preview_rows_json, row_count
-            FROM dataset_sheets
+            UPDATE dataset_sheets
+            SET row_count = ?, column_count = ?, header_rows_json = ?, preview_row_count = ?, preview_rows_json = ?
             WHERE dataset_id = ? AND sheet_name = ?
             "#,
+            params![
+                actual_row_count as i64,
+                column_count as i64,
+                header_rows_json,
+                preview_rows.len() as i64,
+                preview_rows_json,
+                dataset_id.as_str(),
+                sheet_name.as_str()
+            ],
         )
         .map_err(|err| err.to_string())?;
 
-    let (preview_rows_json, row_count): (String, i64) = statement
-        .query_row(params![dataset_id.as_str(), sheet_name.as_str()], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .map_err(|err| err.to_string())?;
-
-    if preview_rows_json != "[]" || row_count > 0 {
-        let raw_rows =
-            serde_json::from_str::<Vec<Vec<String>>>(&preview_rows_json).map_err(|err| err.to_string())?;
-        return Ok(DatasetSheetRowsResult {
+        Ok(DatasetSheetRowsResult {
             name: sheet_name,
-            raw_rows,
-            row_count: row_count.max(0) as usize,
+            raw_rows: preview_rows,
+            row_count: actual_row_count,
             data_mode: "preview".to_string(),
-        });
-    }
-
-    let file_path = get_dataset_file_path(&conn, &dataset_id)?;
-    let mut workbook = open_workbook_auto(Path::new(&file_path)).map_err(|err| err.to_string())?;
-    let range = workbook
-        .worksheet_range(&sheet_name)
-        .map_err(|err| err.to_string())?;
-    let header_rows_json = read_header_context_rows(&range)?;
-    let mut preview_rows = Vec::new();
-    let mut actual_row_count = 0usize;
-    let mut column_count = 0usize;
-    for row in range.rows() {
-        let values = row.iter().map(cell_to_string).collect::<Vec<String>>();
-        if values.iter().all(|value| value.is_empty()) {
-            continue;
-        }
-        column_count = column_count.max(values.len());
-        actual_row_count += 1;
-        if preview_rows.len() < PREVIEW_ROW_LIMIT {
-            preview_rows.push(values);
-        }
-    }
-    let preview_rows_json = serde_json::to_string(&preview_rows).map_err(|err| err.to_string())?;
-    conn.execute(
-        r#"
-        UPDATE dataset_sheets
-        SET row_count = ?, column_count = ?, header_rows_json = ?, preview_row_count = ?, preview_rows_json = ?
-        WHERE dataset_id = ? AND sheet_name = ?
-        "#,
-        params![
-            actual_row_count as i64,
-            column_count as i64,
-            header_rows_json,
-            preview_rows.len() as i64,
-            preview_rows_json,
-            dataset_id.as_str(),
-            sheet_name.as_str()
-        ],
-    )
-    .map_err(|err| err.to_string())?;
-
-    Ok(DatasetSheetRowsResult {
-        name: sheet_name,
-        raw_rows: preview_rows,
-        row_count: actual_row_count,
-        data_mode: "preview".to_string(),
-    })
+        })
+    }))
 }
 
 #[tauri::command]
@@ -1233,18 +1300,20 @@ pub fn read_dataset_sheet_rows(
     dataset_id: String,
     sheet_name: String,
 ) -> Result<DatasetSheetRowsResult, String> {
-    let mut conn = open_dataset_db(&app)?;
-    ensure_schema(&conn)?;
-    ensure_materialized_sheet(&app, &mut conn, &dataset_id, &sheet_name)?;
-    let raw_rows = load_sheet_rows(&conn, &dataset_id, &sheet_name)?;
-    let row_count = raw_rows.len();
+    log_command_result("read_dataset_sheet_rows", guard_spreadsheet_operation("read_dataset_sheet_rows", || {
+        let mut conn = open_dataset_db(&app)?;
+        ensure_schema(&conn)?;
+        ensure_materialized_sheet(&app, &mut conn, &dataset_id, &sheet_name)?;
+        let raw_rows = load_sheet_rows(&conn, &dataset_id, &sheet_name)?;
+        let row_count = raw_rows.len();
 
-    Ok(DatasetSheetRowsResult {
-        name: sheet_name,
-        raw_rows,
-        row_count,
-        data_mode: "full".to_string(),
-    })
+        Ok(DatasetSheetRowsResult {
+            name: sheet_name,
+            raw_rows,
+            row_count,
+            data_mode: "full".to_string(),
+        })
+    }))
 }
 
 #[tauri::command]
@@ -1257,68 +1326,70 @@ pub fn read_dataset_sheet_page(
     offset: usize,
     limit: usize,
 ) -> Result<DatasetSheetPageResult, String> {
-    let mut conn = open_dataset_db(&app)?;
-    ensure_schema(&conn)?;
-    ensure_materialized_sheet(&app, &mut conn, &dataset_id, &sheet_name)?;
+    log_command_result("read_dataset_sheet_page", guard_spreadsheet_operation("read_dataset_sheet_page", || {
+        let mut conn = open_dataset_db(&app)?;
+        ensure_schema(&conn)?;
+        ensure_materialized_sheet(&app, &mut conn, &dataset_id, &sheet_name)?;
 
-    let mut statement = conn
-        .prepare(
-            r#"
-            SELECT header_rows_json, row_count
-            FROM dataset_sheets
-            WHERE dataset_id = ? AND sheet_name = ?
-            "#,
-        )
-        .map_err(|err| err.to_string())?;
+        let mut statement = conn
+            .prepare(
+                r#"
+                SELECT header_rows_json, row_count
+                FROM dataset_sheets
+                WHERE dataset_id = ? AND sheet_name = ?
+                "#,
+            )
+            .map_err(|err| err.to_string())?;
 
-    let (header_rows_json, total_row_count): (String, i64) = statement
-        .query_row(params![dataset_id.as_str(), sheet_name.as_str()], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+        let (header_rows_json, total_row_count): (String, i64) = statement
+            .query_row(params![dataset_id.as_str(), sheet_name.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|err| err.to_string())?;
+
+        let header_rows =
+            serde_json::from_str::<Vec<Vec<String>>>(&header_rows_json).map_err(|err| err.to_string())?;
+        let normalized_header_row_index = header_row_index.max(1);
+        let columns = build_process_columns(
+            &header_rows,
+            normalized_header_row_index,
+            group_header_row_index,
+            "",
+        );
+        let headers = columns
+            .iter()
+            .map(|column| column.header.clone())
+            .collect::<Vec<_>>();
+
+        let data_row_count = (total_row_count.max(0) as usize).saturating_sub(normalized_header_row_index);
+        let normalized_limit = limit.max(1);
+        let raw_rows = load_sheet_rows_page(
+            &conn,
+            &dataset_id,
+            &sheet_name,
+            normalized_header_row_index + offset,
+            normalized_limit,
+        )?;
+
+        let rows = raw_rows
+            .iter()
+            .map(|row| {
+                let mut normalized = HashMap::new();
+                for column in &columns {
+                    normalized.insert(
+                        column.header.clone(),
+                        get_text_row_value(row, column.source_index),
+                    );
+                }
+                normalized
+            })
+            .collect::<Vec<_>>();
+
+        Ok(DatasetSheetPageResult {
+            name: sheet_name,
+            headers,
+            rows,
+            row_count: data_row_count,
         })
-        .map_err(|err| err.to_string())?;
-
-    let header_rows =
-        serde_json::from_str::<Vec<Vec<String>>>(&header_rows_json).map_err(|err| err.to_string())?;
-    let normalized_header_row_index = header_row_index.max(1);
-    let columns = build_process_columns(
-        &header_rows,
-        normalized_header_row_index,
-        group_header_row_index,
-        "",
-    );
-    let headers = columns
-        .iter()
-        .map(|column| column.header.clone())
-        .collect::<Vec<_>>();
-
-    let data_row_count = (total_row_count.max(0) as usize).saturating_sub(normalized_header_row_index);
-    let normalized_limit = limit.max(1);
-    let raw_rows = load_sheet_rows_page(
-        &conn,
-        &dataset_id,
-        &sheet_name,
-        normalized_header_row_index + offset,
-        normalized_limit,
-    )?;
-
-    let rows = raw_rows
-        .iter()
-        .map(|row| {
-            let mut normalized = HashMap::new();
-            for column in &columns {
-                normalized.insert(
-                    column.header.clone(),
-                    get_text_row_value(row, column.source_index),
-                );
-            }
-            normalized
-        })
-        .collect::<Vec<_>>();
-
-    Ok(DatasetSheetPageResult {
-        name: sheet_name,
-        headers,
-        rows,
-        row_count: data_row_count,
-    })
+    }))
 }

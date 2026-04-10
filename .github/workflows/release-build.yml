@@ -7,15 +7,10 @@ on:
       - "v*"
       - "*.*.*"
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -35,16 +30,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
+
+      - name: Setup PNPM
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10 --activate
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

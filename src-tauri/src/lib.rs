@@ -3,15 +3,16 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     process::{Command, Output, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use base64::Engine;
 use serde::Serialize;
-use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tauri::async_runtime::{spawn, spawn_blocking};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
+mod app_logger;
 mod dataset_cache;
 mod engine_backend;
 
@@ -44,6 +45,12 @@ fn emit_source_inspect_event(app: &AppHandle, event: SourceInspectJobEvent) {
     let _ = app.emit(SOURCE_INSPECT_JOB_EVENT, event);
 }
 
+fn log_command_error(context: &str, error: impl AsRef<str>) -> String {
+    let message = error.as_ref().to_string();
+    app_logger::error_with_context(context, &message);
+    message
+}
+
 #[cfg(target_os = "windows")]
 const BUNDLED_PYTHON_RELATIVE_CANDIDATES: &[&str] =
     &["python/runtime/windows/python.exe", "python/runtime/python.exe"];
@@ -69,31 +76,46 @@ fn restart_app(app: AppHandle) {
 
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
-    fs::write(path, content).map_err(|err| err.to_string())
+    fs::write(path, content).map_err(|err| log_command_error("write_text_file", err.to_string()))
 }
 
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
-    fs::read_to_string(path).map_err(|err| err.to_string())
+    fs::read_to_string(path).map_err(|err| log_command_error("read_text_file", err.to_string()))
 }
 
 #[tauri::command]
 fn write_binary_file(path: String, content_base64: String) -> Result<(), String> {
     let normalized = PathBuf::from(path.trim());
     if normalized.as_os_str().is_empty() {
-        return Err("输出路径无效。".to_string());
+        return Err(log_command_error("write_binary_file", "输出路径无效。"));
     }
 
     if let Some(parent) = normalized.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            fs::create_dir_all(parent)
+                .map_err(|err| log_command_error("write_binary_file", err.to_string()))?;
         }
     }
 
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(content_base64)
-        .map_err(|err| err.to_string())?;
-    fs::write(normalized, bytes).map_err(|err| err.to_string())
+        .map_err(|err| log_command_error("write_binary_file", err.to_string()))?;
+    fs::write(normalized, bytes).map_err(|err| log_command_error("write_binary_file", err.to_string()))
+}
+
+#[tauri::command]
+fn append_app_log(level: String, message: String) {
+    let normalized_level = level.trim().to_uppercase();
+    let normalized_message = message.trim();
+    if normalized_message.is_empty() {
+        return;
+    }
+    match normalized_level.as_str() {
+        "WARN" => app_logger::warn(normalized_message),
+        "ERROR" => app_logger::error(normalized_message),
+        _ => app_logger::info(normalized_message),
+    }
 }
 
 pub(crate) fn resolve_python_script_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -270,9 +292,12 @@ fn run_python_transform(app: AppHandle, payload: String) -> Result<String, Strin
     }
 
     if last_error.is_empty() {
-        Err("调用 Python 引擎失败：未找到可用的 Python 解释器。".to_string())
+        Err(log_command_error(
+            "run_python_transform",
+            "调用 Python 引擎失败：未找到可用的 Python 解释器。",
+        ))
     } else {
-        Err(last_error)
+        Err(log_command_error("run_python_transform", last_error))
     }
 }
 
@@ -327,9 +352,12 @@ fn run_python_transform_for_dataset(
     }
 
     if last_error.is_empty() {
-        Err("调用 Python 引擎失败：未找到可用的 Python 解释器。".to_string())
+        Err(log_command_error(
+            "run_python_transform_for_dataset",
+            "调用 Python 引擎失败：未找到可用的 Python 解释器。",
+        ))
     } else {
-        Err(last_error)
+        Err(log_command_error("run_python_transform_for_dataset", last_error))
     }
 }
 
@@ -384,9 +412,12 @@ fn run_python_transform_for_path(
     }
 
     if last_error.is_empty() {
-        Err("调用 Python 引擎失败：未找到可用的 Python 解释器。".to_string())
+        Err(log_command_error(
+            "run_python_transform_for_path",
+            "调用 Python 引擎失败：未找到可用的 Python 解释器。",
+        ))
     } else {
-        Err(last_error)
+        Err(log_command_error("run_python_transform_for_path", last_error))
     }
 }
 
@@ -399,7 +430,7 @@ async fn start_source_inspect_job(
 ) -> Result<String, String> {
     let normalized_file_path = file_path.trim().to_string();
     if normalized_file_path.is_empty() {
-        return Err("来源文件路径不能为空。".to_string());
+        return Err(log_command_error("start_source_inspect_job", "来源文件路径不能为空。"));
     }
 
     let job_id = next_source_inspect_job_id();
@@ -441,6 +472,7 @@ async fn start_source_inspect_job(
         let preview = match preview_result {
             Ok(Ok(preview)) => preview,
             Ok(Err(error)) => {
+                app_logger::error_with_context("start_source_inspect_job/import_spreadsheet_dataset_from_path", &error);
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -456,6 +488,7 @@ async fn start_source_inspect_job(
                 return;
             }
             Err(error) => {
+                app_logger::error_with_context("start_source_inspect_job/import_spreadsheet_dataset_from_path_join", error.to_string());
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -523,6 +556,7 @@ async fn start_source_inspect_job(
                 );
             }
             Ok(Err(error)) => {
+                app_logger::error_with_context("start_source_inspect_job/read_dataset_sheet_header", &error);
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -537,6 +571,7 @@ async fn start_source_inspect_job(
                 );
             }
             Err(error) => {
+                app_logger::error_with_context("start_source_inspect_job/read_dataset_sheet_header_join", error.to_string());
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -562,9 +597,11 @@ async fn run_engine_process_task(
     input: engine_backend::BackendEngineProcessTaskInput,
 ) -> Result<engine_backend::BackendEngineProcessTaskResult, String> {
     let app_handle = app.clone();
-    spawn_blocking(move || engine_backend::run_engine_process_task(&app_handle, input))
-        .await
-        .map_err(|error| error.to_string())?
+    match spawn_blocking(move || engine_backend::run_engine_process_task(&app_handle, input)).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(error)) => Err(log_command_error("run_engine_process_task", error)),
+        Err(error) => Err(log_command_error("run_engine_process_task_join", error.to_string())),
+    }
 }
 
 fn normalize_text(value: Option<&serde_json::Value>) -> Option<String> {
@@ -625,26 +662,42 @@ async fn fetch_slogan() -> Result<String, String> {
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| log_command_error("fetch_slogan/send", err.to_string()))?;
 
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    parse_slogan_from_body(&body).ok_or_else(|| "未获取到有效文案".to_string())
+    let body = response
+        .text()
+        .await
+        .map_err(|err| log_command_error("fetch_slogan/text", err.to_string()))?;
+    parse_slogan_from_body(&body).ok_or_else(|| log_command_error("fetch_slogan/parse", "未获取到有效文案"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            match app_logger::initialize(&app.handle()) {
+                Ok(log_path) => {
+                    app_logger::install_panic_hook();
+                    app_logger::info(format!("应用启动完成，日志文件：{}", log_path.display()));
+                }
+                Err(error) => {
+                    eprintln!("failed to initialize logger: {error}");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             restart_app,
             fetch_slogan,
             write_text_file,
             read_text_file,
             write_binary_file,
+            append_app_log,
             run_python_transform,
             run_python_transform_for_dataset,
             run_python_transform_for_path,
@@ -658,7 +711,9 @@ pub fn run() {
             dataset_cache::read_dataset_sheet_preview,
             dataset_cache::read_dataset_sheet_rows,
             dataset_cache::read_dataset_sheet_page
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        ]);
+
+    if let Err(error) = builder.run(tauri::generate_context!()) {
+        app_logger::error(format!("error while running tauri application: {error}"));
+    }
 }
