@@ -4,6 +4,7 @@ use std::{
     fs,
     io::{Cursor, Write},
     path::PathBuf,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -18,6 +19,7 @@ const UNKNOWN_FALLBACK: &str = "未知错误";
 const ENGINE_PROCESS_EVENT: &str = "engine-process-event";
 
 type SourceRow = HashMap<String, String>;
+type SharedSourceRow = Arc<SourceRow>;
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,12 +125,12 @@ pub struct BackendEngineProcessTaskResult {
 #[derive(Clone)]
 struct LoadedSource {
     sheet_name: String,
-    rows: Vec<SourceRow>,
+    rows: Vec<SharedSourceRow>,
 }
 
 #[derive(Clone)]
 struct WorkingRecord {
-    source_rows: HashMap<String, Option<SourceRow>>,
+    source_rows: HashMap<String, Option<SharedSourceRow>>,
 }
 
 #[derive(Clone)]
@@ -193,6 +195,8 @@ enum ExprToken {
     LParen,
     RParen,
     Comma,
+    Question,
+    Colon,
     End,
 }
 
@@ -626,11 +630,12 @@ fn load_sources(
             preview.rows,
             get_array_from_object(source_object, "preFilters"),
         );
+        let filtered_row_count = filtered_rows.len();
         result.insert(
             source_id.clone(),
             LoadedSource {
                 sheet_name: runtime_source.sheet_name.clone(),
-                rows: filtered_rows.clone(),
+                rows: filtered_rows.into_iter().map(Arc::new).collect(),
             },
         );
         emit_stage(
@@ -640,7 +645,7 @@ fn load_sources(
             &format!(
                 "来源表读取完成：{}，{} 行。",
                 runtime_source.sheet_name,
-                filtered_rows.len()
+                filtered_row_count
             ),
             "info",
         );
@@ -648,10 +653,10 @@ fn load_sources(
     Ok(result)
 }
 
-fn create_working_records(rows: &[SourceRow], source_id: &str) -> Vec<WorkingRecord> {
+fn create_working_records(rows: &[SharedSourceRow], source_id: &str) -> Vec<WorkingRecord> {
     rows.iter()
         .map(|row| WorkingRecord {
-            source_rows: HashMap::from([(source_id.to_string(), Some(row.clone()))]),
+            source_rows: HashMap::from([(source_id.to_string(), Some(Arc::clone(row)))]),
         })
         .collect()
 }
@@ -736,10 +741,10 @@ fn join_sources(
         let join_type = get_text_from_object(relation_object, "joinType");
         let multi_match_strategy = get_text_from_object(relation_object, "multiMatchStrategy");
 
-        let mut index: HashMap<String, Vec<SourceRow>> = HashMap::new();
+        let mut index: HashMap<String, Vec<SharedSourceRow>> = HashMap::new();
         for row in &right_source.rows {
             let key = row.get(&right_field).cloned().unwrap_or_default();
-            index.entry(key).or_default().push(row.clone());
+            index.entry(key).or_default().push(Arc::clone(row));
         }
 
         let mut next_rows = Vec::new();
@@ -748,21 +753,21 @@ fn join_sources(
                 .source_rows
                 .get(&left_source_id)
                 .and_then(|row| row.as_ref())
-                .cloned();
+                .map(Arc::clone);
             let match_key = left_row
                 .as_ref()
                 .and_then(|row| row.get(&left_field))
                 .cloned()
                 .unwrap_or_default();
             let matches = if match_key.is_empty() {
-                Vec::new()
+                None
             } else {
-                index.get(&match_key).cloned().unwrap_or_default()
+                index.get(&match_key)
             };
-            if matches.len() > 1 && multi_match_strategy == "error" {
+            if matches.map(|items| items.len()).unwrap_or(0) > 1 && multi_match_strategy == "error" {
                 return Err(format!("关联 #{} 命中多条记录：{}", relation_index + 1, match_key));
             }
-            if matches.is_empty() {
+            if matches.is_none_or(|items| items.is_empty()) {
                 if join_type == "left_join" {
                     let mut source_rows = record.source_rows.clone();
                     source_rows.insert(right_source_id.clone(), None);
@@ -770,16 +775,17 @@ fn join_sources(
                 }
                 continue;
             }
+            let matches = matches.expect("matches checked above");
             if multi_match_strategy == "all" && matches.len() > 1 {
                 for matched_row in matches {
                     let mut source_rows = record.source_rows.clone();
-                    source_rows.insert(right_source_id.clone(), Some(matched_row));
+                    source_rows.insert(right_source_id.clone(), Some(Arc::clone(matched_row)));
                     next_rows.push(WorkingRecord { source_rows });
                 }
                 continue;
             }
             let mut source_rows = record.source_rows.clone();
-            source_rows.insert(right_source_id.clone(), Some(matches[0].clone()));
+            source_rows.insert(right_source_id.clone(), Some(Arc::clone(&matches[0])));
             next_rows.push(WorkingRecord { source_rows });
         }
 
@@ -835,7 +841,7 @@ fn merge_source_values(record: &WorkingRecord, source_order: &[String]) -> HashM
         let Some(Some(row)) = record.source_rows.get(source_id) else {
             continue;
         };
-        for (key, value) in row {
+        for (key, value) in row.iter() {
             if !key.is_empty() && !result.contains_key(key) {
                 result.insert(key.clone(), value.trim().to_string());
             }
@@ -1177,7 +1183,7 @@ fn extract_matched_source_rows(bucket: &ResultBucket, field: &Map<String, Value>
         }
         let signature = serde_json::to_string(row).unwrap_or_default();
         if unique_rows.insert(signature) {
-            matched_rows.push(row.clone());
+            matched_rows.push((**row).clone());
         }
     }
     matched_rows
@@ -1364,6 +1370,14 @@ fn tokenize_expression(input: &str) -> Result<Vec<ExprToken>, String> {
                 tokens.push(ExprToken::Slash);
                 index += 1;
             }
+            '?' => {
+                tokens.push(ExprToken::Question);
+                index += 1;
+            }
+            ':' => {
+                tokens.push(ExprToken::Colon);
+                index += 1;
+            }
             '(' => {
                 tokens.push(ExprToken::LParen);
                 index += 1;
@@ -1447,6 +1461,23 @@ impl ExprValue {
             ExprValue::Empty => Ok(0.0),
         }
     }
+
+    fn is_truthy(&self) -> Result<bool, String> {
+        match self {
+            ExprValue::Number(number) => Ok(number.abs() >= 1e-9),
+            ExprValue::Text(text) => {
+                let normalized = text.trim();
+                if normalized.is_empty() {
+                    return Ok(false);
+                }
+                if let Ok(number) = get_expression_number(normalized) {
+                    return Ok(number.abs() >= 1e-9);
+                }
+                Ok(true)
+            }
+            ExprValue::Empty => Ok(false),
+        }
+    }
 }
 
 impl<'a> ExprParser<'a> {
@@ -1494,6 +1525,26 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<ExprValue, String> {
+        self.parse_ternary()
+    }
+
+    fn parse_ternary(&mut self) -> Result<ExprValue, String> {
+        let condition = self.parse_additive()?;
+        if matches!(self.current(), ExprToken::Question) {
+            self.advance();
+            let when_true = self.parse_expression()?;
+            self.expect(ExprToken::Colon)?;
+            let when_false = self.parse_expression()?;
+            return Ok(if condition.is_truthy()? {
+                when_true
+            } else {
+                when_false
+            });
+        }
+        Ok(condition)
+    }
+
+    fn parse_additive(&mut self) -> Result<ExprValue, String> {
         let mut left = self.parse_term()?;
         loop {
             match self.current() {
