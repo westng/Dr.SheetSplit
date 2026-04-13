@@ -1,8 +1,9 @@
 use std::{
+    env,
     fs::{self, File, OpenOptions},
     io::Write,
     panic::{self, PanicHookInfo},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -67,25 +68,22 @@ fn panic_payload_text(info: &PanicHookInfo<'_>) -> String {
     "unknown panic payload".to_string()
 }
 
-pub fn initialize(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(logger) = LOGGER.get() {
-        return Ok(logger.path.clone());
+fn open_log_file(path: &Path) -> Result<File, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
 
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    let logs_dir = app_data_dir.join("logs");
-    fs::create_dir_all(&logs_dir).map_err(|error| error.to_string())?;
-
-    let log_path = logs_dir.join("app.log");
-    let file = OpenOptions::new()
+    OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)
-        .map_err(|error| error.to_string())?;
+        .open(path)
+        .map_err(|error| error.to_string())
+}
 
+fn set_logger(path: PathBuf, file: File) -> Result<PathBuf, String> {
     if LOGGER
         .set(LoggerState {
-            path: log_path.clone(),
+            path: path.clone(),
             file: Mutex::new(file),
         })
         .is_err()
@@ -95,7 +93,49 @@ pub fn initialize(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
+    Ok(path)
+}
+
+pub fn initialize(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(logger) = LOGGER.get() {
+        return Ok(logger.path.clone());
+    }
+
+    let mut primary_error = String::new();
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        let log_path = app_data_dir.join("logs").join("app.log");
+        match open_log_file(&log_path) {
+            Ok(file) => {
+                let log_path = set_logger(log_path, file)?;
+                info(format!("日志系统已初始化：{}", log_path.display()));
+                return Ok(log_path);
+            }
+            Err(error) => {
+                primary_error = format!("应用数据目录日志初始化失败：{error}");
+            }
+        }
+    } else if let Err(error) = app.path().app_data_dir() {
+        primary_error = format!("应用数据目录解析失败：{error}");
+    }
+
+    let fallback_log_path = env::temp_dir()
+        .join("Dr.SheetSplit")
+        .join("logs")
+        .join("app.log");
+    let fallback_file = open_log_file(&fallback_log_path).map_err(|fallback_error| {
+        if primary_error.is_empty() {
+            format!("临时目录日志初始化失败：{fallback_error}")
+        } else {
+            format!("{primary_error}；临时目录日志初始化失败：{fallback_error}")
+        }
+    })?;
+    let log_path = set_logger(fallback_log_path, fallback_file)?;
+
     info(format!("日志系统已初始化：{}", log_path.display()));
+    if !primary_error.is_empty() {
+        warn(primary_error);
+        warn("已自动回退到临时目录日志。");
+    }
     Ok(log_path)
 }
 
