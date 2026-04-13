@@ -122,17 +122,6 @@ fn read_text_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn read_binary_file_base64(path: String) -> Result<String, String> {
-    let normalized = PathBuf::from(path.trim());
-    if normalized.as_os_str().is_empty() {
-        return Err(log_command_error("read_binary_file_base64", "读取路径无效。"));
-    }
-
-    let bytes = fs::read(normalized).map_err(|err| log_command_error("read_binary_file_base64", err.to_string()))?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-#[tauri::command]
 fn write_binary_file(path: String, content_base64: String) -> Result<(), String> {
     let normalized = PathBuf::from(path.trim());
     if normalized.as_os_str().is_empty() {
@@ -786,7 +775,6 @@ pub fn run() {
             fetch_slogan,
             write_text_file,
             read_text_file,
-            read_binary_file_base64,
             write_binary_file,
             append_app_log,
             run_python_transform,
@@ -795,7 +783,6 @@ pub fn run() {
             start_source_inspect_job,
             run_engine_process_task,
             dataset_cache::import_spreadsheet_dataset,
-            dataset_cache::import_parsed_spreadsheet_dataset,
             dataset_cache::import_spreadsheet_dataset_from_path,
             dataset_cache::inspect_spreadsheet_from_path,
             dataset_cache::read_dataset_sheet_header,

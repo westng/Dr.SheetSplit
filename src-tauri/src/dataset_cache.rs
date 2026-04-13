@@ -14,7 +14,7 @@ use base64::Engine;
 use calamine::{open_workbook_auto, open_workbook_auto_from_rs, Data, Range, Reader};
 use csv::{ReaderBuilder, WriterBuilder};
 use duckdb::{params, Connection};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -41,13 +41,6 @@ pub struct DatasetImportResult {
     pub file_name: String,
     pub imported_at_ms: u64,
     pub sheets: Vec<DatasetSheetSummary>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParsedWorkbookSheetInput {
-    pub name: String,
-    pub raw_rows: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1262,55 +1255,6 @@ pub fn import_spreadsheet_dataset(
             let mut conn = open_dataset_db(&app)?;
             import_workbook_eager(&mut conn, &mut workbook, &dataset_id, &file_name, "", imported_at_ms)
         })
-    })())
-}
-
-#[tauri::command]
-pub fn import_parsed_spreadsheet_dataset(
-    app: AppHandle,
-    file_name: String,
-    sheets: Vec<ParsedWorkbookSheetInput>,
-) -> Result<DatasetImportResult, String> {
-    log_command_result("import_parsed_spreadsheet_dataset", (|| {
-        let normalized_file_name = file_name.trim();
-        if normalized_file_name.is_empty() {
-            return Err("导入文件名不能为空。".to_string());
-        }
-        if sheets.is_empty() {
-            return Err("当前文件未解析到任何工作表。".to_string());
-        }
-
-        let dataset_id = next_dataset_id()?;
-        let imported_at_ms = current_timestamp_ms()?;
-        let workbook = xlsx_fallback::FallbackWorkbook {
-            sheets: sheets
-                .into_iter()
-                .map(|sheet| xlsx_fallback::FallbackSheet {
-                    name: {
-                        let trimmed = sheet.name.trim();
-                        if trimmed.is_empty() {
-                            "Sheet1".to_string()
-                        } else {
-                            trimmed.to_string()
-                        }
-                    },
-                    rows: sheet
-                        .raw_rows
-                        .into_iter()
-                        .map(|row| row.into_iter().map(|cell| cell.trim().to_string()).collect())
-                        .collect(),
-                })
-                .collect(),
-        };
-        let mut conn = open_dataset_db(&app)?;
-        import_fallback_workbook_eager(
-            &mut conn,
-            &workbook,
-            &dataset_id,
-            normalized_file_name,
-            "",
-            imported_at_ms,
-        )
     })())
 }
 
