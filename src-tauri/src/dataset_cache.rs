@@ -115,7 +115,7 @@ fn panic_payload_to_text(payload: Box<dyn Any + Send>) -> String {
     "unknown panic payload".to_string()
 }
 
-fn spreadsheet_panic_user_message() -> String {
+pub(crate) fn spreadsheet_panic_user_message() -> String {
     if cfg!(target_os = "windows") {
         "当前文件在 Windows 环境解析时发生异常，请先用 Excel 或 WPS 将文件另存为标准 .xlsx 后重试。".to_string()
     } else {
@@ -764,8 +764,13 @@ fn detect_source_format(file_path: &str, file_name: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn should_force_xlsx_fallback(file_path: &str, file_name: &str) -> bool {
-    cfg!(target_os = "windows") && detect_source_format(file_path, file_name) == "xlsx"
+fn is_windows_ooxml_format(source_format: &str) -> bool {
+    matches!(source_format, "xlsx" | "xlsm" | "xltx" | "xltm")
+}
+
+fn should_force_windows_ooxml_fallback(file_path: &str, file_name: &str) -> bool {
+    cfg!(target_os = "windows")
+        && is_windows_ooxml_format(&detect_source_format(file_path, file_name))
 }
 
 fn collect_range_rows(range: &Range<Data>) -> Vec<Vec<String>> {
@@ -787,7 +792,7 @@ fn read_sheet_rows_from_path(file_path: &str, sheet_name: &str) -> Result<Vec<Ve
         .and_then(|value| value.to_str())
         .unwrap_or(normalized_path);
 
-    if should_force_xlsx_fallback(normalized_path, file_name) {
+    if should_force_windows_ooxml_fallback(normalized_path, file_name) {
         let workbook = xlsx_fallback::read_xlsx_from_path(Path::new(normalized_path))?;
         let sheet = workbook
             .sheets
@@ -1274,7 +1279,7 @@ pub fn import_spreadsheet_dataset_from_path(
             .unwrap_or_else(|| normalized_path.to_string());
         let source_format = detect_source_format(normalized_path, &file_name);
 
-        if should_force_xlsx_fallback(normalized_path, &file_name) {
+        if should_force_windows_ooxml_fallback(normalized_path, &file_name) {
             let workbook = xlsx_fallback::read_xlsx_from_path(path)?;
             let mut conn = open_dataset_db(&app)?;
             return import_fallback_workbook_eager(
@@ -1303,7 +1308,7 @@ pub fn import_spreadsheet_dataset_from_path(
         match primary_result {
             Ok(result) => Ok(result),
             Err(primary_error) => {
-                if cfg!(target_os = "windows") && source_format == "xlsx" {
+                if cfg!(target_os = "windows") && is_windows_ooxml_format(&source_format) {
                     app_logger::warn(format!(
                         "import_spreadsheet_dataset_from_path primary parser failed, trying fallback parser: {}",
                         primary_error
@@ -1343,7 +1348,7 @@ pub fn inspect_spreadsheet_from_path(file_path: String) -> Result<DatasetImportR
         let imported_at_ms = current_timestamp_ms()?;
         let source_format = detect_source_format(normalized_path, &file_name);
 
-        if should_force_xlsx_fallback(normalized_path, &file_name) {
+        if should_force_windows_ooxml_fallback(normalized_path, &file_name) {
             let workbook = xlsx_fallback::read_xlsx_from_path(path)?;
             return Ok(DatasetImportResult {
                 dataset_id: String::new(),
@@ -1386,7 +1391,7 @@ pub fn inspect_spreadsheet_from_path(file_path: String) -> Result<DatasetImportR
         match primary_result {
             Ok(result) => Ok(result),
             Err(primary_error) => {
-                if cfg!(target_os = "windows") && source_format == "xlsx" {
+                if cfg!(target_os = "windows") && is_windows_ooxml_format(&source_format) {
                     app_logger::warn(format!(
                         "inspect_spreadsheet_from_path primary parser failed, trying fallback parser: {}",
                         primary_error

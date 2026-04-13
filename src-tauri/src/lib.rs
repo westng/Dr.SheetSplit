@@ -79,6 +79,15 @@ fn catch_panic_result<T>(
     }
 }
 
+fn source_inspect_user_error(error: impl Into<String>) -> String {
+    let detail = error.into();
+    if detail.contains("panic") || detail.contains("assertion `left == right` failed") {
+        dataset_cache::spreadsheet_panic_user_message()
+    } else {
+        detail
+    }
+}
+
 #[cfg(target_os = "windows")]
 const BUNDLED_PYTHON_RELATIVE_CANDIDATES: &[&str] =
     &["python/runtime/windows/python.exe", "python/runtime/python.exe"];
@@ -503,7 +512,11 @@ async fn start_source_inspect_job(
         let preview = match preview_result {
             Ok(Ok(preview)) => preview,
             Ok(Err(error)) => {
-                app_logger::error_with_context("start_source_inspect_job/import_spreadsheet_dataset_from_path", &error);
+                let display_error = source_inspect_user_error(error);
+                app_logger::error_with_context(
+                    "start_source_inspect_job/import_spreadsheet_dataset_from_path",
+                    &display_error,
+                );
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -513,7 +526,7 @@ async fn start_source_inspect_job(
                         sheet_name: String::new(),
                         preview: None,
                         header: None,
-                        error: Some(error),
+                        error: Some(display_error),
                     },
                 );
                 return;
@@ -522,7 +535,11 @@ async fn start_source_inspect_job(
                 let detail = match error {
                     tauri::Error::JoinError(join_error) if join_error.is_panic() => {
                         let panic_text = panic_payload_text(join_error.into_panic());
-                        format!("spawn_blocking panic: {panic_text}")
+                        app_logger::error_with_context(
+                            "start_source_inspect_job/import_spreadsheet_dataset_from_path_join_panic",
+                            format!("spawn_blocking panic: {panic_text}"),
+                        );
+                        dataset_cache::spreadsheet_panic_user_message()
                     }
                     other => other.to_string(),
                 };
@@ -597,7 +614,11 @@ async fn start_source_inspect_job(
                 );
             }
             Ok(Err(error)) => {
-                app_logger::error_with_context("start_source_inspect_job/read_dataset_sheet_header", &error);
+                let display_error = source_inspect_user_error(error);
+                app_logger::error_with_context(
+                    "start_source_inspect_job/read_dataset_sheet_header",
+                    &display_error,
+                );
                 emit_source_inspect_event(
                     &app_handle,
                     SourceInspectJobEvent {
@@ -607,7 +628,7 @@ async fn start_source_inspect_job(
                         sheet_name: resolved_sheet_name,
                         preview: Some(preview),
                         header: None,
-                        error: Some(error),
+                        error: Some(display_error),
                     },
                 );
             }
@@ -615,7 +636,11 @@ async fn start_source_inspect_job(
                 let detail = match error {
                     tauri::Error::JoinError(join_error) if join_error.is_panic() => {
                         let panic_text = panic_payload_text(join_error.into_panic());
-                        format!("spawn_blocking panic: {panic_text}")
+                        app_logger::error_with_context(
+                            "start_source_inspect_job/read_dataset_sheet_header_join_panic",
+                            format!("spawn_blocking panic: {panic_text}"),
+                        );
+                        dataset_cache::spreadsheet_panic_user_message()
                     }
                     other => other.to_string(),
                 };
