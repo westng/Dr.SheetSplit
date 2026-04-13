@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "dr-sheetsplit"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "base64 0.22.1",
  "calamine",

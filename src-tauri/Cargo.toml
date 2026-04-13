@@ -1,6 +1,6 @@
 [package]
 name = "dr-sheetsplit"
-version = "1.0.6"
+version = "1.0.7"
 description = "Dr.SheetSplit desktop app"
 authors = ["you"]
 edition = "2021"
