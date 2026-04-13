@@ -130,7 +130,7 @@ struct LoadedSource {
 
 #[derive(Clone)]
 struct WorkingRecord {
-    source_rows: HashMap<String, Option<SharedSourceRow>>,
+    source_rows: HashMap<String, Vec<SharedSourceRow>>,
 }
 
 #[derive(Clone)]
@@ -656,7 +656,7 @@ fn load_sources(
 fn create_working_records(rows: &[SharedSourceRow], source_id: &str) -> Vec<WorkingRecord> {
     rows.iter()
         .map(|row| WorkingRecord {
-            source_rows: HashMap::from([(source_id.to_string(), Some(Arc::clone(row)))]),
+            source_rows: HashMap::from([(source_id.to_string(), vec![Arc::clone(row)])]),
         })
         .collect()
 }
@@ -749,43 +749,46 @@ fn join_sources(
 
         let mut next_rows = Vec::new();
         for record in &working_rows {
-            let left_row = record
+            let left_rows = record
                 .source_rows
                 .get(&left_source_id)
-                .and_then(|row| row.as_ref())
-                .map(Arc::clone);
-            let match_key = left_row
-                .as_ref()
-                .and_then(|row| row.get(&left_field))
                 .cloned()
                 .unwrap_or_default();
-            let matches = if match_key.is_empty() {
-                None
-            } else {
-                index.get(&match_key)
-            };
-            if matches.map(|items| items.len()).unwrap_or(0) > 1 && multi_match_strategy == "error" {
-                return Err(format!("关联 #{} 命中多条记录：{}", relation_index + 1, match_key));
-            }
-            if matches.is_none_or(|items| items.is_empty()) {
-                if join_type == "left_join" {
-                    let mut source_rows = record.source_rows.clone();
-                    source_rows.insert(right_source_id.clone(), None);
-                    next_rows.push(WorkingRecord { source_rows });
+            let mut matched_rows = Vec::new();
+            let mut seen_ptrs = HashSet::new();
+
+            for left_row in &left_rows {
+                let match_key = left_row.get(&left_field).cloned().unwrap_or_default();
+                let matches = if match_key.is_empty() {
+                    None
+                } else {
+                    index.get(&match_key)
+                };
+                if matches.map(|items| items.len()).unwrap_or(0) > 1 && multi_match_strategy == "error" {
+                    return Err(format!("关联 #{} 命中多条记录：{}", relation_index + 1, match_key));
                 }
-                continue;
-            }
-            let matches = matches.expect("matches checked above");
-            if multi_match_strategy == "all" && matches.len() > 1 {
+                let Some(matches) = matches else {
+                    continue;
+                };
+                if multi_match_strategy == "first" {
+                    if let Some(first_match) = matches.first() {
+                        matched_rows.push(Arc::clone(first_match));
+                    }
+                    break;
+                }
                 for matched_row in matches {
-                    let mut source_rows = record.source_rows.clone();
-                    source_rows.insert(right_source_id.clone(), Some(Arc::clone(matched_row)));
-                    next_rows.push(WorkingRecord { source_rows });
+                    let pointer = Arc::as_ptr(matched_row) as usize;
+                    if seen_ptrs.insert(pointer) {
+                        matched_rows.push(Arc::clone(matched_row));
+                    }
                 }
+            }
+
+            let mut source_rows = record.source_rows.clone();
+            if matched_rows.is_empty() && join_type != "left_join" {
                 continue;
             }
-            let mut source_rows = record.source_rows.clone();
-            source_rows.insert(right_source_id.clone(), Some(Arc::clone(&matches[0])));
+            source_rows.insert(right_source_id.clone(), matched_rows);
             next_rows.push(WorkingRecord { source_rows });
         }
 
@@ -829,7 +832,7 @@ fn resolve_source_value(record: &WorkingRecord, source_table_id: &str, source_fi
     record
         .source_rows
         .get(source_table_id)
-        .and_then(|row| row.as_ref())
+        .and_then(|rows| rows.first())
         .and_then(|row| row.get(source_field))
         .cloned()
         .unwrap_or_default()
@@ -838,12 +841,14 @@ fn resolve_source_value(record: &WorkingRecord, source_table_id: &str, source_fi
 fn merge_source_values(record: &WorkingRecord, source_order: &[String]) -> HashMap<String, String> {
     let mut result = HashMap::new();
     for source_id in source_order {
-        let Some(Some(row)) = record.source_rows.get(source_id) else {
+        let Some(rows) = record.source_rows.get(source_id) else {
             continue;
         };
-        for (key, value) in row.iter() {
-            if !key.is_empty() && !result.contains_key(key) {
-                result.insert(key.clone(), value.trim().to_string());
+        for row in rows {
+            for (key, value) in row.iter() {
+                if !key.is_empty() && !result.contains_key(key) {
+                    result.insert(key.clone(), value.trim().to_string());
+                }
             }
         }
     }
@@ -1160,37 +1165,39 @@ fn extract_matched_source_rows(
         let Some(record) = working_rows.get(*record_index) else {
             continue;
         };
-        let Some(Some(row)) = record.source_rows.get(&source_table_id) else {
+        let Some(rows) = record.source_rows.get(&source_table_id) else {
             continue;
         };
-        if !matches_output_filters(field, row) {
-            continue;
-        }
-        let mut match_all = true;
-        for condition in get_array_from_object(field, "matchConditions") {
-            let Some(condition_object) = condition.as_object() else {
+        for row in rows {
+            if !matches_output_filters(field, row) {
                 continue;
-            };
-            let expected = bucket
-                .dimension_values
-                .get(&get_text_from_object(condition_object, "resultField"))
-                .cloned()
-                .unwrap_or_default();
-            let actual = row
-                .get(&get_text_from_object(condition_object, "sourceField"))
-                .cloned()
-                .unwrap_or_default();
-            if expected != actual {
-                match_all = false;
-                break;
             }
-        }
-        if !match_all {
-            continue;
-        }
-        let signature = serde_json::to_string(row).unwrap_or_default();
-        if unique_rows.insert(signature) {
-            matched_rows.push((**row).clone());
+            let mut match_all = true;
+            for condition in get_array_from_object(field, "matchConditions") {
+                let Some(condition_object) = condition.as_object() else {
+                    continue;
+                };
+                let expected = bucket
+                    .dimension_values
+                    .get(&get_text_from_object(condition_object, "resultField"))
+                    .cloned()
+                    .unwrap_or_default();
+                let actual = row
+                    .get(&get_text_from_object(condition_object, "sourceField"))
+                    .cloned()
+                    .unwrap_or_default();
+                if expected != actual {
+                    match_all = false;
+                    break;
+                }
+            }
+            if !match_all {
+                continue;
+            }
+            let signature = serde_json::to_string(row).unwrap_or_default();
+            if unique_rows.insert(signature) {
+                matched_rows.push((**row).clone());
+            }
         }
     }
     matched_rows
@@ -2079,7 +2086,7 @@ fn resolve_output_field_header_name(
                 record
                     .source_rows
                     .get(&table_id)
-                    .and_then(|row| row.as_ref())
+                    .and_then(|rows| rows.first())
                     .cloned()
             });
             let value = source_row
@@ -2103,7 +2110,7 @@ fn resolve_output_field_header_name(
                 record
                     .source_rows
                     .get(&table_id)
-                    .and_then(|row| row.as_ref())
+                    .and_then(|rows| rows.first())
                     .cloned()
             });
             let source_values: Vec<String> = get_array_from_object(field, "nameMappingSourceFields")
@@ -2147,7 +2154,7 @@ fn resolve_output_field_header_name(
                 record
                     .source_rows
                     .get(&table_id)
-                    .and_then(|row| row.as_ref())
+                    .and_then(|rows| rows.first())
                     .cloned()
             });
             let fallback = get_text_from_object(field, "fieldName");
@@ -2239,15 +2246,17 @@ fn build_dynamic_header_config(
         let Some(record) = working_rows.get(*record_index) else {
             continue;
         };
-        let Some(Some(row)) = record.source_rows.get(&source_table_id) else {
+        let Some(rows) = record.source_rows.get(&source_table_id) else {
             continue;
         };
-        if !matches_output_filters(field, row) {
-            continue;
-        }
-        let raw_value = row.get(&column_field).cloned().unwrap_or_default();
-        if !raw_value.is_empty() {
-            values.insert(raw_value);
+        for row in rows {
+            if !matches_output_filters(field, row) {
+                continue;
+            }
+            let raw_value = row.get(&column_field).cloned().unwrap_or_default();
+            if !raw_value.is_empty() {
+                values.insert(raw_value);
+            }
         }
     }
 
