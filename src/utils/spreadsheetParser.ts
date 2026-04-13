@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import * as XLSX from "xlsx";
+import { basenameFromPath } from "./nativeFile";
 
 export type SpreadsheetSheetPreview = {
   name: string;
@@ -57,6 +59,11 @@ type SpreadsheetDatasetSheetPageResponse = {
   headers: string[];
   rows: Record<string, string>[];
   rowCount: number;
+};
+
+type ParsedSpreadsheetSheetInput = {
+  name: string;
+  rawRows: string[][];
 };
 
 export type SpreadsheetSheetHeaderLayout = {
@@ -143,6 +150,40 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+function normalizeParsedMatrix(matrix: unknown[][]): string[][] {
+  return matrix.map((row) =>
+    Array.isArray(row)
+      ? row.map((cell) => toDisplayValue(cell))
+      : [],
+  );
+}
+
+function buildParsedWorkbookPayload(fileName: string, workbook: XLSX.WorkBook): {
+  fileName: string;
+  sheets: ParsedSpreadsheetSheetInput[];
+} {
+  return {
+    fileName,
+    sheets: workbook.SheetNames.map((sheetName) => ({
+      name: String(sheetName ?? "").trim(),
+      rawRows: normalizeParsedMatrix(
+        XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[sheetName], {
+          header: 1,
+          raw: false,
+          defval: "",
+          blankrows: true,
+        }),
+      ),
+    })),
+  };
+}
+
+async function readBinaryFileBase64(path: string): Promise<string> {
+  return invoke<string>("read_binary_file_base64", {
+    path,
+  });
 }
 
 export function inferSheetHeaderLayout(sheet: SpreadsheetSheetData): SpreadsheetSheetHeaderLayout {
@@ -310,17 +351,19 @@ export async function parseSpreadsheetFile(file: File): Promise<SpreadsheetPrevi
 }
 
 export async function parseSpreadsheetPath(filePath: string): Promise<SpreadsheetPreview> {
-  const payload = await invoke<SpreadsheetDatasetImportResponse>("import_spreadsheet_dataset_from_path", {
-    filePath,
+  const contentBase64 = await readBinaryFileBase64(filePath);
+  const workbook = XLSX.read(contentBase64, {
+    type: "base64",
   });
+  const payload = await invoke<SpreadsheetDatasetImportResponse>("import_parsed_spreadsheet_dataset", buildParsedWorkbookPayload(
+    basenameFromPath(filePath) || filePath,
+    workbook,
+  ));
   return normalizePreview(payload);
 }
 
 export async function inspectSpreadsheetPath(filePath: string): Promise<SpreadsheetPreview> {
-  const payload = await invoke<SpreadsheetDatasetImportResponse>("inspect_spreadsheet_from_path", {
-    filePath,
-  });
-  return normalizePreview(payload);
+  return parseSpreadsheetPath(filePath);
 }
 
 export async function readSpreadsheetSheetPreview(

@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useEngineRuleStore, useMappingStore, useUiStore } from "../../store";
 import type { EngineRuleDefinition, EngineRuleOutputField, EngineRuleSource } from "../../types/engineRule";
@@ -9,7 +8,8 @@ import { validateEngineRuleDraft } from "../../utils/engineRuleValidator";
 import { basenameFromPath } from "../../utils/nativeFile";
 import {
   buildSheetPreview,
-  startSpreadsheetInspectJob,
+  readSpreadsheetSheetHeader,
+  parseSpreadsheetPath,
   type SpreadsheetPreview,
   type SpreadsheetSheetPreview,
 } from "../../utils/spreadsheetParser";
@@ -35,21 +35,6 @@ type ValidationState = {
   errors: string[];
 };
 
-type SourceInspectJobEvent = {
-  jobId: string;
-  sourceId: string;
-  status: "queued" | "reading_sheets" | "reading_headers" | "done" | "failed";
-  sheetName: string;
-  preview?: SpreadsheetPreview | null;
-  header?: {
-    name: string;
-    rawRows: string[][];
-    rowCount: number;
-    dataMode?: "header" | "preview" | "full";
-  } | null;
-  error?: string | null;
-};
-
 const { t } = useI18n();
 const { engineRules, reloadEngineRules } = useEngineRuleStore();
 const { mappingGroups } = useMappingStore();
@@ -72,7 +57,6 @@ const runSummary = ref<{
   sheetCount: number;
   rowCount: number;
 } | null>(null);
-let unlistenSourceInspectJob: UnlistenFn | undefined;
 const MAX_PROCESS_LOGS = 200;
 const EXPORT_DIRECTORY_STORAGE_KEY = "settings.exportDirectory";
 
@@ -415,11 +399,46 @@ async function queueSourceInspectJob(_rule: EngineRuleDefinition, source: Engine
   state.loading = true;
   state.error = "";
   state.sheetPreview = null;
-  state.inspectJobId = await startSpreadsheetInspectJob(
-    source.id,
-    state.filePath,
-    state.sheetName.trim() || source.sourceSheetName.trim(),
-  );
+
+  try {
+    const preview = state.datasetId && state.preview
+      ? state.preview
+      : await parseSpreadsheetPath(state.filePath);
+    const preferredSheetName = state.sheetName.trim() || source.sourceSheetName.trim();
+    const resolvedSheetName = preferredSheetName && preview.sheets.some((sheet) => sheet.name === preferredSheetName)
+      ? preferredSheetName
+      : (preview.sheets[0]?.name ?? "");
+
+    if (!resolvedSheetName) {
+      throw new Error(t("engineProcess.messages.sourceLoadFailed"));
+    }
+
+    const header = await readSpreadsheetSheetHeader(preview.datasetId, resolvedSheetName);
+    state.loading = false;
+    state.error = "";
+    state.preview = preview;
+    state.datasetId = preview.datasetId;
+    state.fileName = preview.fileName || state.fileName;
+    state.sheetName = resolvedSheetName;
+    state.sheetPreview = buildSheetPreview({
+      ...header,
+      dataMode: header.dataMode ?? "header",
+    }, {
+      headerRowIndex: source.sourceHeaderRowIndex,
+      groupHeaderRowIndex: source.sourceGroupHeaderRowIndex,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error ?? "");
+    state.loading = false;
+    state.preview = null;
+    state.sheetPreview = null;
+    state.datasetId = "";
+    state.error = t("engineProcess.messages.sourceLoadFailed", {
+      source: getSourceName(_rule, source.id),
+      reason: reason || "-",
+    });
+  }
+
   return state;
 }
 
@@ -621,70 +640,6 @@ watch(
   },
   { immediate: true },
 );
-
-onMounted(async () => {
-  unlistenSourceInspectJob = await listen<SourceInspectJobEvent>("source-inspect-job", (event) => {
-    const payload = event.payload;
-    const rule = selectedRule.value;
-    if (!rule) {
-      return;
-    }
-
-    const source = rule.sources.find((item) => item.id === payload.sourceId);
-    if (!source) {
-      return;
-    }
-
-    const state = ensureRuntimeSourceState(source);
-    if (state.inspectJobId && payload.jobId !== state.inspectJobId) {
-      return;
-    }
-
-    if (payload.status === "queued" || payload.status === "reading_sheets" || payload.status === "reading_headers") {
-      state.loading = true;
-      state.error = "";
-      if (payload.preview) {
-        state.preview = payload.preview;
-        state.datasetId = payload.preview.datasetId || state.datasetId;
-        state.fileName = payload.preview.fileName || state.fileName;
-      }
-      if (payload.sheetName) {
-        state.sheetName = payload.sheetName;
-      }
-      return;
-    }
-
-    if (payload.status === "done") {
-      state.loading = false;
-      state.error = "";
-      state.preview = payload.preview ?? state.preview;
-      state.datasetId = payload.preview?.datasetId || state.datasetId;
-      state.fileName = payload.preview?.fileName || state.fileName;
-      state.sheetName = payload.sheetName || state.sheetName;
-      if (payload.header) {
-        state.sheetPreview = buildSheetPreview({
-          ...payload.header,
-          dataMode: payload.header.dataMode ?? "header",
-        }, {
-          headerRowIndex: source.sourceHeaderRowIndex,
-          groupHeaderRowIndex: source.sourceGroupHeaderRowIndex,
-        });
-      }
-      return;
-    }
-
-    state.loading = false;
-    state.sheetPreview = null;
-    state.error = t("engineProcess.messages.sourceLoadFailed", {
-      source: getSourceName(rule, source.id),
-      reason: payload.error || "-",
-    });
-  });
-});
-
-onUnmounted(() => {
-  unlistenSourceInspectJob?.();
-});
 
 void reloadEngineRules();
 </script>
