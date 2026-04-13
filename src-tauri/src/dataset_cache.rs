@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use base64::Engine;
 use calamine::{open_workbook_auto, open_workbook_auto_from_rs, Data, Range, Reader};
 use csv::{ReaderBuilder, WriterBuilder};
-use duckdb::{params, Connection};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -146,12 +146,34 @@ fn next_dataset_id() -> Result<String, String> {
 fn resolve_dataset_db_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
     std::fs::create_dir_all(&app_data_dir).map_err(|err| err.to_string())?;
-    Ok(app_data_dir.join("datasets.duckdb"))
+    Ok(app_data_dir.join("datasets.sqlite"))
 }
 
 fn open_dataset_db(app: &AppHandle) -> Result<Connection, String> {
     let db_path = resolve_dataset_db_path(app)?;
-    Connection::open(db_path).map_err(|err| err.to_string())
+    let conn = Connection::open(db_path).map_err(|err| err.to_string())?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|err| err.to_string())?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|err| err.to_string())?;
+    Ok(conn)
+}
+
+fn table_has_column(conn: &Connection, table_name: &str, column_name: &str) -> Result<bool, String> {
+    let mut statement = conn
+        .prepare(&format!(r#"PRAGMA table_info("{table_name}")"#))
+        .map_err(|err| err.to_string())?;
+    let column_iter = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| err.to_string())?;
+
+    for column in column_iter {
+        if column.map_err(|err| err.to_string())? == column_name {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn ensure_schema(conn: &Connection) -> Result<(), String> {
@@ -182,11 +204,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
 
-    conn.execute(
-        "ALTER TABLE datasets ADD COLUMN IF NOT EXISTS file_path VARCHAR",
-        [],
-    )
-    .map_err(|err| err.to_string())?;
+    if !table_has_column(conn, "datasets", "file_path")? {
+        conn.execute("ALTER TABLE datasets ADD COLUMN file_path VARCHAR", [])
+            .map_err(|err| err.to_string())?;
+    }
 
     conn.execute(
         "UPDATE datasets SET file_path = '' WHERE file_path IS NULL",
@@ -194,11 +215,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
 
-    conn.execute(
-        "ALTER TABLE dataset_sheets ADD COLUMN IF NOT EXISTS header_rows_json VARCHAR",
-        [],
-    )
-    .map_err(|err| err.to_string())?;
+    if !table_has_column(conn, "dataset_sheets", "header_rows_json")? {
+        conn.execute("ALTER TABLE dataset_sheets ADD COLUMN header_rows_json VARCHAR", [])
+            .map_err(|err| err.to_string())?;
+    }
 
     conn.execute(
         "UPDATE dataset_sheets SET header_rows_json = '[]' WHERE header_rows_json IS NULL",
@@ -934,18 +954,20 @@ fn ensure_materialized_sheet(
     dataset_id: &str,
     sheet_name: &str,
 ) -> Result<(), String> {
-    let mut statement = conn
-        .prepare(
-            r#"
-            SELECT table_name
-            FROM dataset_sheets
-            WHERE dataset_id = ? AND sheet_name = ?
-            "#,
-        )
-        .map_err(|err| err.to_string())?;
-    let table_name: String = statement
-        .query_row(params![dataset_id, sheet_name], |row| row.get(0))
-        .map_err(|err| err.to_string())?;
+    let table_name: String = {
+        let mut statement = conn
+            .prepare(
+                r#"
+                SELECT table_name
+                FROM dataset_sheets
+                WHERE dataset_id = ? AND sheet_name = ?
+                "#,
+            )
+            .map_err(|err| err.to_string())?;
+        statement
+            .query_row(params![dataset_id, sheet_name], |row| row.get(0))
+            .map_err(|err| err.to_string())?
+    };
     if !table_name.trim().is_empty() {
         return Ok(());
     }

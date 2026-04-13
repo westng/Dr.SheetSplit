@@ -749,6 +749,7 @@ function ensureImportedRuleIds(items: EngineRuleDefinition[]): EngineRuleDefinit
 }
 
 async function reloadEngineRules(): Promise<void> {
+  await ensureSchema();
   const db = await getDb();
   const rows = await db.select<EngineRuleRow[]>(
     `SELECT id, payload FROM ${ENGINE_RULE_TABLE_NAME} ORDER BY datetime(updated_at) DESC`,
