@@ -1582,10 +1582,7 @@ impl<'a> ExprParser<'a> {
                     self.advance();
                     let right = self.parse_factor()?;
                     let divisor = right.as_number()?;
-                    if divisor.abs() < 1e-9 {
-                        return Err("表达式执行除法时分母为 0。".to_string());
-                    }
-                    left = ExprValue::Number(left.as_number()? / divisor);
+                    left = ExprValue::Number(safe_divide(left.as_number()?, divisor));
                 }
                 _ => break,
             }
