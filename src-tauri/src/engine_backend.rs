@@ -137,7 +137,7 @@ struct WorkingRecord {
 struct ResultBucket {
     key: String,
     dimension_values: HashMap<String, String>,
-    working_rows: Vec<WorkingRecord>,
+    record_indices: Vec<usize>,
     output_values: HashMap<String, String>,
     row_values: Vec<String>,
     merged_source_values: HashMap<String, String>,
@@ -1088,7 +1088,7 @@ fn apply_row_completion(
         baseline_buckets.push(ResultBucket {
             key: build_group_key_by_labels(&group_fields, &dimension_values),
             dimension_values,
-            working_rows: Vec::new(),
+            record_indices: Vec::new(),
             output_values: HashMap::new(),
             row_values: Vec::new(),
             merged_source_values: HashMap::new(),
@@ -1145,14 +1145,21 @@ fn matches_output_filters(field: &Map<String, Value>, row: &SourceRow) -> bool {
     })
 }
 
-fn extract_matched_source_rows(bucket: &ResultBucket, field: &Map<String, Value>) -> Vec<SourceRow> {
+fn extract_matched_source_rows(
+    bucket: &ResultBucket,
+    working_rows: &[WorkingRecord],
+    field: &Map<String, Value>,
+) -> Vec<SourceRow> {
     let source_table_id = get_text_from_object(field, "sourceTableId");
     if source_table_id.is_empty() {
         return Vec::new();
     }
     let mut unique_rows = HashSet::new();
     let mut matched_rows = Vec::new();
-    for record in &bucket.working_rows {
+    for record_index in &bucket.record_indices {
+        let Some(record) = working_rows.get(*record_index) else {
+            continue;
+        };
         let Some(Some(row)) = record.source_rows.get(&source_table_id) else {
             continue;
         };
@@ -1915,6 +1922,7 @@ fn resolve_fallback_value(
 
 fn resolve_scalar_output_value(
     bucket: &ResultBucket,
+    working_rows: &[WorkingRecord],
     field: &Map<String, Value>,
     mapping_indexes: &HashMap<String, HashMap<String, String>>,
     mapping_groups: &[MappingGroup],
@@ -1922,7 +1930,7 @@ fn resolve_scalar_output_value(
     if get_text_from_object(field, "valueMode") == "constant" {
         return finalize_output_value(field, get_text_from_object(field, "constantValue"));
     }
-    let matched_rows = extract_matched_source_rows(bucket, field);
+    let matched_rows = extract_matched_source_rows(bucket, working_rows, field);
     let empty_row = SourceRow::new();
     let first_row = matched_rows.first().unwrap_or(&empty_row);
     let mut value = match get_text_from_object(field, "valueMode").as_str() {
@@ -2050,7 +2058,8 @@ fn resolve_scalar_output_value(
 
 fn resolve_output_field_header_name(
     field: &Map<String, Value>,
-    sheet_rows: &[WorkingRecord],
+    sheet_record_indices: &[usize],
+    working_rows: &[WorkingRecord],
     mapping_indexes: &HashMap<String, HashMap<String, String>>,
 ) -> Result<String, String> {
     match get_text_from_object(field, "nameMode").as_str() {
@@ -2065,7 +2074,8 @@ fn resolve_output_field_header_name(
         "source_field" => {
             let table_id = get_text_from_object(field, "nameSourceTableId");
             let source_field = get_text_from_object(field, "nameSourceField");
-            let source_row = sheet_rows.iter().find_map(|record| {
+            let source_row = sheet_record_indices.iter().find_map(|record_index| {
+                let record = working_rows.get(*record_index)?;
                 record
                     .source_rows
                     .get(&table_id)
@@ -2088,7 +2098,8 @@ fn resolve_output_field_header_name(
         }
         "mapping" => {
             let table_id = get_text_from_object(field, "nameSourceTableId");
-            let source_row = sheet_rows.iter().find_map(|record| {
+            let source_row = sheet_record_indices.iter().find_map(|record_index| {
+                let record = working_rows.get(*record_index)?;
                 record
                     .source_rows
                     .get(&table_id)
@@ -2131,7 +2142,8 @@ fn resolve_output_field_header_name(
         }
         "expression" => {
             let table_id = get_text_from_object(field, "nameSourceTableId");
-            let source_row = sheet_rows.iter().find_map(|record| {
+            let source_row = sheet_record_indices.iter().find_map(|record_index| {
+                let record = working_rows.get(*record_index)?;
                 record
                     .source_rows
                     .get(&table_id)
@@ -2206,7 +2218,11 @@ fn resolve_output_field_selection_label(
     }
 }
 
-fn build_dynamic_header_config(field: &Map<String, Value>, sheet_rows: &[WorkingRecord]) -> DynamicHeaderConfig {
+fn build_dynamic_header_config(
+    field: &Map<String, Value>,
+    sheet_record_indices: &[usize],
+    working_rows: &[WorkingRecord],
+) -> DynamicHeaderConfig {
     let source_table_id = get_text_from_object(field, "sourceTableId");
     let column_field = get_object_from_object(field, "dynamicColumnConfig")
         .map(|config| get_text_from_object(config, "columnField"))
@@ -2219,7 +2235,10 @@ fn build_dynamic_header_config(field: &Map<String, Value>, sheet_rows: &[Working
         .unwrap_or_default();
 
     let mut values = HashSet::new();
-    for record in sheet_rows {
+    for record_index in sheet_record_indices {
+        let Some(record) = working_rows.get(*record_index) else {
+            continue;
+        };
         let Some(Some(row)) = record.source_rows.get(&source_table_id) else {
             continue;
         };
@@ -2537,8 +2556,8 @@ fn build_engine_output(
         .ok_or_else(|| "规则缺少分 Sheet 配置。".to_string())?;
 
     let mut sheet_order = Vec::new();
-    let mut sheet_buckets: HashMap<String, Vec<WorkingRecord>> = HashMap::new();
-    for record in working_rows {
+    let mut sheet_buckets: HashMap<String, Vec<usize>> = HashMap::new();
+    for (record_index, record) in working_rows.iter().enumerate() {
         let dimension_values = build_dimension_values(rule, record);
         let raw_sheet_name = if get_text_from_object(sheet_config, "mode") == "split_field" {
             let split_value = if get_text_from_object(sheet_config, "splitFieldScope") == "result_field" {
@@ -2583,7 +2602,7 @@ fn build_engine_output(
         if !sheet_buckets.contains_key(&raw_sheet_name) {
             sheet_order.push(raw_sheet_name.clone());
         }
-        sheet_buckets.entry(raw_sheet_name).or_default().push(record.clone());
+        sheet_buckets.entry(raw_sheet_name).or_default().push(record_index);
     }
     if sheet_buckets.is_empty() {
         let default_name = {
@@ -2605,16 +2624,19 @@ fn build_engine_output(
     for raw_sheet_name in sheet_order {
         let records_in_sheet = sheet_buckets.get(&raw_sheet_name).cloned().unwrap_or_default();
         let mut grouped = HashMap::new();
-        for record in &records_in_sheet {
+        for record_index in &records_in_sheet {
+            let Some(record) = working_rows.get(*record_index) else {
+                continue;
+            };
             let dimension_values = build_dimension_values(rule, record);
             let key = build_group_key_by_labels(&dimension_labels, &dimension_values);
             grouped
                 .entry(key.clone())
-                .and_modify(|bucket: &mut ResultBucket| bucket.working_rows.push(record.clone()))
+                .and_modify(|bucket: &mut ResultBucket| bucket.record_indices.push(*record_index))
                 .or_insert_with(|| ResultBucket {
                     key,
                     dimension_values,
-                    working_rows: vec![record.clone()],
+                    record_indices: vec![*record_index],
                     output_values: HashMap::new(),
                     row_values: Vec::new(),
                     merged_source_values: merge_source_values(record, &source_order),
@@ -2637,6 +2659,7 @@ fn build_engine_output(
             let base_label = resolve_output_field_header_name(
                 field_object,
                 &records_in_sheet,
+                working_rows,
                 mapping_indexes,
             )?;
             output_field_label_map.insert(
@@ -2655,7 +2678,7 @@ fn build_engine_output(
             {
                 dynamic_header_configs.insert(
                     get_text_from_object(field_object, "id"),
-                    build_dynamic_header_config(field_object, &records_in_sheet),
+                    build_dynamic_header_config(field_object, &records_in_sheet, working_rows),
                 );
             }
         }
@@ -2755,7 +2778,7 @@ fn build_engine_output(
                                 }
                             }
                         }
-                        let matched_rows = extract_matched_source_rows(bucket, field_object);
+                        let matched_rows = extract_matched_source_rows(bucket, working_rows, field_object);
                         let column_field = dynamic_config
                             .map(|config| get_text_from_object(config, "columnField"))
                             .unwrap_or_default();
@@ -2846,6 +2869,7 @@ fn build_engine_output(
                             output_values: output_values.clone(),
                             ..bucket.clone()
                         },
+                        working_rows,
                         field_object,
                         mapping_indexes,
                         mapping_groups,
