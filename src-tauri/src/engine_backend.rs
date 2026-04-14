@@ -143,6 +143,81 @@ struct ResultBucket {
     merged_source_values: HashMap<String, String>,
 }
 
+fn is_single_table_detail_mode(rule: &Map<String, Value>, dimension_labels: &[String]) -> bool {
+    get_text_from_object(rule, "ruleType") == "single_table" && dimension_labels.is_empty()
+}
+
+fn build_mapping_order_indexes(mapping_groups: &[MappingGroup]) -> HashMap<String, HashMap<String, usize>> {
+    let mut indexes = HashMap::new();
+    for group in mapping_groups {
+        let mut group_index = HashMap::new();
+        for (position, entry) in group.entries.iter().enumerate() {
+            let source = entry.source.trim();
+            let target = entry.target.trim();
+            if !source.is_empty() {
+                group_index.entry(source.to_string()).or_insert(position);
+            }
+            if !target.is_empty() {
+                group_index.entry(target.to_string()).or_insert(position);
+            }
+        }
+        indexes.insert(group.id.clone(), group_index);
+    }
+    indexes
+}
+
+fn resolve_result_bucket_sort_value(bucket: &ResultBucket, field_name: &str) -> String {
+    bucket
+        .dimension_values
+        .get(field_name)
+        .cloned()
+        .or_else(|| bucket.output_values.get(field_name).cloned())
+        .unwrap_or_default()
+}
+
+fn compare_result_sort_values(
+    sort_field: &Map<String, Value>,
+    left_value: &str,
+    right_value: &str,
+    mapping_order_indexes: &HashMap<String, HashMap<String, usize>>,
+) -> Ordering {
+    let direction = get_text_from_object(sort_field, "direction");
+    let mode = get_text_from_object(sort_field, "mode");
+    if mode == "mapping_order" {
+        let mapping_group_id = get_text_from_object(sort_field, "mappingGroupId");
+        let left_rank = mapping_order_indexes
+            .get(&mapping_group_id)
+            .and_then(|group| group.get(left_value))
+            .copied();
+        let right_rank = mapping_order_indexes
+            .get(&mapping_group_id)
+            .and_then(|group| group.get(right_value))
+            .copied();
+        let ordering = match (left_rank, right_rank) {
+            (Some(left_rank), Some(right_rank)) => left_rank.cmp(&right_rank),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => compare_maybe_number(left_value, right_value),
+        };
+        if ordering == Ordering::Equal {
+            return Ordering::Equal;
+        }
+        if direction == "desc" && left_rank.is_some() == right_rank.is_some() {
+            return ordering.reverse();
+        }
+        return ordering;
+    }
+
+    let ordering = compare_maybe_number(left_value, right_value);
+    if ordering == Ordering::Equal {
+        Ordering::Equal
+    } else if direction == "desc" {
+        ordering.reverse()
+    } else {
+        ordering
+    }
+}
+
 #[derive(Clone)]
 struct DynamicHeaderConfig {
     headers: Vec<String>,
@@ -2629,6 +2704,8 @@ fn build_engine_output(
     let mut sheets = Vec::new();
     let mut used_sheet_names = HashSet::new();
     let mut total_row_count = 0usize;
+    let single_table_detail_mode = is_single_table_detail_mode(rule, &dimension_labels);
+    let mapping_order_indexes = build_mapping_order_indexes(mapping_groups);
 
     for raw_sheet_name in sheet_order {
         let records_in_sheet = sheet_buckets.get(&raw_sheet_name).cloned().unwrap_or_default();
@@ -2638,7 +2715,11 @@ fn build_engine_output(
                 continue;
             };
             let dimension_values = build_dimension_values(rule, record);
-            let key = build_group_key_by_labels(&dimension_labels, &dimension_values);
+            let key = if single_table_detail_mode {
+                format!("detail:{record_index}")
+            } else {
+                build_group_key_by_labels(&dimension_labels, &dimension_values)
+            };
             grouped
                 .entry(key.clone())
                 .and_modify(|bucket: &mut ResultBucket| bucket.record_indices.push(*record_index))
@@ -2905,36 +2986,37 @@ fn build_engine_output(
                 .collect();
         }
 
-        let sort_fields = get_array_from_object(result, "sortFields");
-        result_buckets.sort_by(|left, right| {
-            for sort_field in sort_fields {
-                let Some(sort_field_object) = sort_field.as_object() else {
-                    continue;
-                };
-                let field_name = get_text_from_object(sort_field_object, "fieldName");
-                let left_value = left
-                    .dimension_values
-                    .get(&field_name)
-                    .cloned()
-                    .or_else(|| left.output_values.get(&field_name).cloned())
-                    .unwrap_or_default();
-                let right_value = right
-                    .dimension_values
-                    .get(&field_name)
-                    .cloned()
-                    .or_else(|| right.output_values.get(&field_name).cloned())
-                    .unwrap_or_default();
-                let result = compare_maybe_number(&left_value, &right_value);
-                if result != Ordering::Equal {
-                    return if get_text_from_object(sort_field_object, "direction") == "desc" {
-                        result.reverse()
-                    } else {
-                        result
+        let sort_config = get_object_from_object(result, "sortConfig");
+        let sort_enabled = sort_config
+            .map(|config| get_bool_from_object(config, "enabled", false))
+            .unwrap_or_else(|| !get_array_from_object(result, "sortFields").is_empty());
+        let sort_fields = sort_config
+            .map(|config| get_array_from_object(config, "fields"))
+            .unwrap_or_else(|| get_array_from_object(result, "sortFields"));
+        if sort_enabled {
+            result_buckets.sort_by(|left, right| {
+                for sort_field in sort_fields {
+                    let Some(sort_field_object) = sort_field.as_object() else {
+                        continue;
                     };
+                    let field_name = get_text_from_object(sort_field_object, "fieldName");
+                    let left_value = resolve_result_bucket_sort_value(left, &field_name);
+                    let right_value = resolve_result_bucket_sort_value(right, &field_name);
+                    let result = compare_result_sort_values(
+                        sort_field_object,
+                        &left_value,
+                        &right_value,
+                        &mapping_order_indexes,
+                    );
+                    if result != Ordering::Equal {
+                        return result;
+                    }
                 }
-            }
-            compare_text(&left.key, &right.key)
-        });
+                compare_text(&left.key, &right.key)
+            });
+        } else {
+            result_buckets.sort_by(|left, right| compare_text(&left.key, &right.key));
+        }
 
         let row_matrix: Vec<Vec<String>> = result_buckets
             .iter()

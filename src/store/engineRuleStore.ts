@@ -45,7 +45,9 @@ import {
   type EngineResultCompletionConfig,
   type EngineResultCompletionMappingValueType,
   type EngineResultCompletionMode,
+  type EngineResultSortConfig,
   type EngineResultSortField,
+  type EngineResultSortMode,
   type EngineTextAggregateConfig,
   type EngineTextAggregateDelimiterMode,
   type EngineRuleOutputField,
@@ -104,6 +106,10 @@ function normalizeFilterOperator(value: unknown): EngineSourceFilterOperator {
 
 function normalizeSortDirection(value: unknown): EngineSortDirection {
   return value === "desc" ? "desc" : "asc";
+}
+
+function normalizeResultSortMode(value: unknown): EngineResultSortMode {
+  return value === "mapping_order" ? "mapping_order" : "value";
 }
 
 function normalizeSheetMode(value: unknown): EngineSheetMode {
@@ -356,7 +362,24 @@ function normalizeResultSortField(value: unknown): EngineResultSortField | null 
   return {
     id: String(input.id ?? "").trim() || crypto.randomUUID(),
     fieldName: String(input.fieldName ?? "").trim(),
+    mode: normalizeResultSortMode((input as { mode?: unknown }).mode),
+    mappingGroupId: String((input as { mappingGroupId?: unknown }).mappingGroupId ?? "").trim(),
     direction: normalizeSortDirection(input.direction),
+  };
+}
+
+function normalizeResultSortConfig(value: unknown): EngineResultSortConfig {
+  const fallback = createEmptyEngineRuleDefinition().result.sortConfig;
+  if (!value || typeof value !== "object") {
+    return fallback;
+  }
+
+  const input = value as Partial<EngineResultSortConfig>;
+  return {
+    enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
+    fields: Array.isArray(input.fields)
+      ? input.fields.map(normalizeResultSortField).filter((item): item is EngineResultSortField => item !== null)
+      : fallback.fields,
   };
 }
 
@@ -615,14 +638,22 @@ function normalizeResultConfig(value: unknown): EngineRuleResultConfig {
         aggregateMode: "sum" as const,
       }))
     : [];
+  const sortConfig = normalizeResultSortConfig((input as { sortConfig?: unknown }).sortConfig);
+  const legacySortFields = Array.isArray((input as { sortFields?: unknown[] }).sortFields)
+    ? ((input as { sortFields?: unknown[] }).sortFields ?? [])
+        .map(normalizeResultSortField)
+        .filter((item): item is EngineResultSortField => item !== null)
+    : [];
 
   return {
-    groupFields: groupFields.length > 0 ? groupFields : fallback.groupFields,
-    sortFields: Array.isArray(input.sortFields)
-      ? input.sortFields
-          .map(normalizeResultSortField)
-          .filter((item): item is EngineResultSortField => item !== null)
-      : [],
+    groupFields: Array.isArray(input.groupFields) ? groupFields : fallback.groupFields,
+    sortConfig:
+      (input as { sortConfig?: unknown }).sortConfig !== undefined
+        ? sortConfig
+        : {
+            enabled: legacySortFields.length > 0,
+            fields: legacySortFields,
+          },
     rowCompletion: normalizeResultCompletionConfig((input as { rowCompletion?: unknown }).rowCompletion),
     sheetConfig: {
       ...createEmptyEngineSheetConfig(),

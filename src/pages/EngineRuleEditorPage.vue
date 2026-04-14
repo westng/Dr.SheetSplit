@@ -21,6 +21,7 @@ import {
   ENGINE_RESULT_COMPLETION_BASELINE_TYPES,
   ENGINE_RESULT_COMPLETION_MAPPING_VALUE_TYPES,
   ENGINE_RESULT_COMPLETION_MODES,
+  ENGINE_RESULT_SORT_MODES,
   ENGINE_TEXT_AGGREGATE_DELIMITER_MODES,
   ENGINE_RULE_TYPES,
   ENGINE_SHEET_MODES,
@@ -66,6 +67,7 @@ type EditorPanelKey =
   | "sources"
   | "relations"
   | "dimensions"
+  | "resultSort"
   | "rowCompletion"
   | "outputs"
   | "sheet"
@@ -96,6 +98,7 @@ const collapsedSidebarSections = ref<Record<string, boolean>>({
   sources: false,
   relations: false,
   dimensions: false,
+  resultSort: false,
   outputs: false,
   sheet: false,
   style: false,
@@ -185,6 +188,10 @@ const outputFieldLabelMap = computed(() =>
 
 const outputFieldNameOptions = computed(() =>
   outputFieldViews.value.map((field) => field.label.trim()).filter(Boolean),
+);
+
+const resultSortFieldOptions = computed(() =>
+  Array.from(new Set([...resultFieldOptions.value, ...outputFieldNameOptions.value])),
 );
 
 const sourceTemplateVariables = computed(() =>
@@ -482,7 +489,7 @@ function setDraftRule(rule: EngineRuleDefinition): void {
   if (draftRule.value.sources.length === 0) {
     draftRule.value.sources = [createEmptyEngineRuleSource()];
   }
-  if (draftRule.value.result.groupFields.length === 0) {
+  if (draftRule.value.ruleType !== "single_table" && draftRule.value.result.groupFields.length === 0) {
     draftRule.value.result.groupFields = [createEmptyEngineResultGroupField()];
   }
   if (draftRule.value.outputFields.length === 0) {
@@ -508,6 +515,26 @@ function rowCompletionStatus(): "empty" | "partial" | "ready" {
     return config.manualValuesText.trim() ? "ready" : "partial";
   }
   return "partial";
+}
+
+function resultSortStatus(): "empty" | "partial" | "ready" {
+  if (!draftRule.value.result.sortConfig.enabled) {
+    return "empty";
+  }
+  const fields = draftRule.value.result.sortConfig.fields;
+  if (fields.length === 0) {
+    return "partial";
+  }
+  const readyCount = fields.filter((field) => {
+    if (!field.fieldName.trim()) {
+      return false;
+    }
+    if (field.mode === "mapping_order" && !field.mappingGroupId.trim()) {
+      return false;
+    }
+    return true;
+  }).length;
+  return sectionStatus(fields.length, readyCount);
 }
 
 function sheetSectionStatus(): "empty" | "partial" | "ready" {
@@ -601,6 +628,9 @@ const currentPanelTitle = computed(() => {
   }
   if (activePanelKey.value === "dimensions") {
     return t("engineRules.editor.resultTitle");
+  }
+  if (activePanelKey.value === "resultSort") {
+    return t("engineRules.editor.resultSortTitle");
   }
   if (activePanelKey.value === "rowCompletion") {
     return t("engineRules.editor.rowCompletionTitle");
@@ -979,6 +1009,9 @@ function ensureSingleTableLimit(): void {
   if (draftRule.value.ruleType === "single_table" && draftRule.value.relations.length > 0) {
     draftRule.value.relations = [];
   }
+  if (draftRule.value.ruleType !== "single_table" && draftRule.value.result.groupFields.length === 0) {
+    draftRule.value.result.groupFields = [createEmptyEngineResultGroupField()];
+  }
 }
 
 function addSource(): void {
@@ -1037,21 +1070,32 @@ function addResultGroupField(): void {
 
 function removeResultGroupField(fieldId: string): void {
   const next = draftRule.value.result.groupFields.filter((field) => field.id !== fieldId);
-  draftRule.value.result.groupFields = next.length > 0 ? next : [createEmptyEngineResultGroupField()];
+  draftRule.value.result.groupFields =
+    next.length > 0 || draftRule.value.ruleType === "single_table"
+      ? next
+      : [createEmptyEngineResultGroupField()];
   if (activePanelKey.value === dimensionPanelKey(fieldId)) {
     setActivePanel("dimensions");
   }
 }
 
 function addSortField(): void {
-  draftRule.value.result.sortFields = [
-    ...draftRule.value.result.sortFields,
+  draftRule.value.result.sortConfig.fields = [
+    ...draftRule.value.result.sortConfig.fields,
     createEmptyEngineResultSortField(),
   ];
 }
 
 function removeSortField(fieldId: string): void {
-  draftRule.value.result.sortFields = draftRule.value.result.sortFields.filter((field) => field.id !== fieldId);
+  draftRule.value.result.sortConfig.fields = draftRule.value.result.sortConfig.fields.filter((field) => field.id !== fieldId);
+}
+
+function handleResultSortModeChange(fieldId: string): void {
+  const field = draftRule.value.result.sortConfig.fields.find((item) => item.id === fieldId);
+  if (!field || field.mode === "mapping_order") {
+    return;
+  }
+  field.mappingGroupId = "";
 }
 
 function addRelation(): void {
@@ -1528,6 +1572,8 @@ watch(
 watch(
   () => [
     resultFieldOptions.value.join("|"),
+    resultSortFieldOptions.value.join("|"),
+    mappingOptions.value.map((item) => item.id).join("|"),
     draftRule.value.result.sheetConfig.splitFieldScope,
     draftRule.value.result.sheetConfig.splitSourceTableId,
     draftRule.value.sources.map((item) => item.id).join("|"),
@@ -1562,8 +1608,30 @@ watch(
     ) {
       draftRule.value.result.rowCompletion.sourceField = "";
     }
+
+    draftRule.value.result.sortConfig.fields = draftRule.value.result.sortConfig.fields.map((field) => ({
+      ...field,
+      fieldName: field.fieldName && !resultSortFieldOptions.value.includes(field.fieldName) ? "" : field.fieldName,
+      mappingGroupId:
+        field.mode === "mapping_order" &&
+        field.mappingGroupId &&
+        !mappingOptions.value.some((item) => item.id === field.mappingGroupId)
+          ? ""
+          : field.mode === "mapping_order"
+            ? field.mappingGroupId
+            : "",
+    }));
   },
   { immediate: true },
+);
+
+watch(
+  () => draftRule.value.result.sortConfig.enabled,
+  (enabled) => {
+    if (enabled && draftRule.value.result.sortConfig.fields.length === 0) {
+      addSortField();
+    }
+  },
 );
 
 watch(
@@ -1790,7 +1858,7 @@ onUnmounted(() => {
             <button
               type="button"
               class="tree-item tree-item-root"
-              :class="{ active: panelMatches('dimensions') || panelMatches('rowCompletion') || activePanelKey.startsWith('dimension:') }"
+              :class="{ active: panelMatches('dimensions') || activePanelKey.startsWith('dimension:') }"
               @click="setActivePanel('dimensions')"
             >
               <span class="status-dot" :class="sectionStatus(draftRule.result.groupFields.length, dimensionReadyCount)" />
@@ -1820,16 +1888,31 @@ onUnmounted(() => {
               <span class="status-dot" :class="dimensionStatus(field.id)" />
               <span class="tree-item-label">{{ dimensionLabel(field.id) }}</span>
             </button>
-            <button
-              type="button"
-              class="tree-item tree-item-child"
-              :class="{ active: panelMatches('rowCompletion') }"
-              @click="setActivePanel('rowCompletion')"
-            >
-              <span class="status-dot" :class="rowCompletionStatus()" />
-              <span class="tree-item-label">{{ $t("engineRules.editor.rowCompletionTitle") }}</span>
-            </button>
           </div>
+        </div>
+
+        <div class="sidebar-section">
+          <button
+            type="button"
+            class="tree-item tree-item-root"
+            :class="{ active: panelMatches('resultSort') }"
+            @click="setActivePanel('resultSort')"
+          >
+            <span class="status-dot" :class="resultSortStatus()" />
+            <span class="tree-item-label">{{ $t("engineRules.editor.resultSortTitle") }}</span>
+          </button>
+        </div>
+
+        <div class="sidebar-section">
+          <button
+            type="button"
+            class="tree-item tree-item-root"
+            :class="{ active: panelMatches('rowCompletion') }"
+            @click="setActivePanel('rowCompletion')"
+          >
+            <span class="status-dot" :class="rowCompletionStatus()" />
+            <span class="tree-item-label">{{ $t("engineRules.editor.rowCompletionTitle") }}</span>
+          </button>
         </div>
 
         <div class="sidebar-section">
@@ -2402,73 +2485,89 @@ onUnmounted(() => {
                   <span class="status-dot" :class="dimensionStatus(field.id)" />
                 </button>
               </div>
+            </section>
+          </template>
 
-              <div class="inspector-subsection">
-                <div class="inspector-inline-head">
-                  <h4>{{ $t("engineRules.fields.sortFields") }}</h4>
-                  <button type="button" class="secondary-btn" @click="addSortField">
-                    {{ $t("engineRules.actions.addSort") }}
-                  </button>
-                </div>
-                <table v-if="draftRule.result.sortFields.length > 0" class="rule-table compact-table">
-                  <thead>
-                    <tr>
-                      <th>{{ $t("engineRules.fields.sortFields") }}</th>
-                      <th>{{ $t("engineRules.fields.valueMode") }}</th>
-                      <th class="operation-col">{{ $t("engineRules.actions.remove") }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="field in draftRule.result.sortFields" :key="field.id">
-                      <td>
-                        <select v-model="field.fieldName">
-                          <option value="">{{ $t("engineRules.messages.selectResultField") }}</option>
-                          <option v-for="name in resultFieldOptions" :key="name" :value="name">
-                            {{ name }}
-                          </option>
-                        </select>
-                      </td>
-                      <td>
-                        <select v-model="field.direction">
-                          <option v-for="direction in ENGINE_SORT_DIRECTIONS" :key="direction" :value="direction">
-                            {{ $t(`engineRules.sortDirections.${direction}`) }}
-                          </option>
-                        </select>
-                      </td>
-                      <td>
-                        <button type="button" class="text-btn danger" @click="removeSortField(field.id)">
-                          {{ $t("engineRules.actions.remove") }}
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p v-else class="hint-text">{{ $t("engineRules.messages.noSorts") }}</p>
-              </div>
-
-              <div class="inspector-subsection">
-                <div class="inspector-inline-head">
-                  <h4>{{ $t("engineRules.editor.rowCompletionTitle") }}</h4>
-                  <button type="button" class="secondary-btn" @click="setActivePanel('rowCompletion')">
-                    {{ $t("engineRules.actions.configure") }}
-                  </button>
-                </div>
-                <button type="button" class="stack-card stack-card-compact" @click="setActivePanel('rowCompletion')">
-                  <div class="stack-card-main">
-                    <div class="mini-card-head">
-                      <span>{{ $t("engineRules.editor.rowCompletionTitle") }}</span>
-                    </div>
-                    <span class="mini-card-meta">
-                      {{
-                        draftRule.result.rowCompletion.enabled
-                          ? $t(`engineRules.rowCompletionBaselineTypes.${draftRule.result.rowCompletion.baselineType}`)
-                          : $t("engineRules.labels.unset")
-                      }}
-                    </span>
-                  </div>
-                  <span class="status-dot" :class="rowCompletionStatus()" />
+          <template v-else-if="panelMatches('resultSort')">
+            <section class="inspector-section">
+              <div class="inspector-inline-head">
+                <h3>{{ $t("engineRules.editor.resultSortTitle") }}</h3>
+                <button
+                  type="button"
+                  class="secondary-btn"
+                  :disabled="!draftRule.result.sortConfig.enabled"
+                  @click="addSortField"
+                >
+                  {{ $t("engineRules.actions.addSort") }}
                 </button>
               </div>
+              <div class="switch-row">
+                <span>{{ $t("engineRules.fields.resultSortEnabled") }}</span>
+                <label class="switch" :aria-label="$t('engineRules.fields.resultSortEnabled')">
+                  <input v-model="draftRule.result.sortConfig.enabled" type="checkbox" />
+                  <span class="switch-track">
+                    <span class="switch-thumb" />
+                  </span>
+                </label>
+              </div>
+              <table
+                v-if="draftRule.result.sortConfig.enabled && draftRule.result.sortConfig.fields.length > 0"
+                class="rule-table compact-table"
+              >
+                <thead>
+                  <tr>
+                    <th>{{ $t("engineRules.fields.sortFields") }}</th>
+                    <th>{{ $t("engineRules.fields.resultSortMode") }}</th>
+                    <th>{{ $t("engineRules.fields.mappingGroupId") }}</th>
+                    <th>{{ $t("engineRules.fields.sortDirection") }}</th>
+                    <th class="operation-col">{{ $t("engineRules.actions.remove") }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="field in draftRule.result.sortConfig.fields" :key="field.id">
+                    <td>
+                      <select v-model="field.fieldName">
+                        <option value="">{{ $t("engineRules.messages.selectResultField") }}</option>
+                        <option v-for="name in resultSortFieldOptions" :key="name" :value="name">
+                          {{ name }}
+                        </option>
+                      </select>
+                    </td>
+                    <td>
+                      <select v-model="field.mode" @change="handleResultSortModeChange(field.id)">
+                        <option v-for="mode in ENGINE_RESULT_SORT_MODES" :key="mode" :value="mode">
+                          {{ $t(`engineRules.resultSortModes.${mode}`) }}
+                        </option>
+                      </select>
+                    </td>
+                    <td>
+                      <select v-model="field.mappingGroupId" :disabled="field.mode !== 'mapping_order'">
+                        <option value="">{{ $t("engineRules.messages.selectMapping") }}</option>
+                        <option
+                          v-for="mapping in mappingOptions"
+                          :key="`result-sort-mapping-${field.id}-${mapping.id}`"
+                          :value="mapping.id"
+                        >
+                          {{ mapping.name }}
+                        </option>
+                      </select>
+                    </td>
+                    <td>
+                      <select v-model="field.direction">
+                        <option v-for="direction in ENGINE_SORT_DIRECTIONS" :key="direction" :value="direction">
+                          {{ $t(`engineRules.sortDirections.${direction}`) }}
+                        </option>
+                      </select>
+                    </td>
+                    <td>
+                      <button type="button" class="text-btn danger" @click="removeSortField(field.id)">
+                        {{ $t("engineRules.actions.remove") }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else class="hint-text">{{ $t("engineRules.messages.noSorts") }}</p>
             </section>
           </template>
 

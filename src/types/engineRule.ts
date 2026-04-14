@@ -1,6 +1,7 @@
 export type EngineRuleType = "single_table" | "multi_table";
 export type EngineSourceFilterOperator = "contains_any" | "equals" | "not_equals";
 export type EngineSortDirection = "asc" | "desc";
+export type EngineResultSortMode = "value" | "mapping_order";
 export type EngineSheetMode = "single" | "split_field";
 export type EngineSheetSplitScope = "result_field" | "source_field";
 export type EngineSheetValueFilterMode = "none" | "exclude_manual" | "exclude_mapping_source";
@@ -62,7 +63,14 @@ export type EngineResultGroupField = {
 export type EngineResultSortField = {
   id: string;
   fieldName: string;
+  mode: EngineResultSortMode;
+  mappingGroupId: string;
   direction: EngineSortDirection;
+};
+
+export type EngineResultSortConfig = {
+  enabled: boolean;
+  fields: EngineResultSortField[];
 };
 
 export type EngineSourceRelation = {
@@ -208,7 +216,7 @@ export type EngineRuleOutputField = {
 
 export type EngineRuleResultConfig = {
   groupFields: EngineResultGroupField[];
-  sortFields: EngineResultSortField[];
+  sortConfig: EngineResultSortConfig;
   rowCompletion: EngineResultCompletionConfig;
   sheetConfig: EngineSheetConfig;
   totalRow: EngineTotalRowConfig;
@@ -237,6 +245,7 @@ export const ENGINE_SOURCE_FILTER_OPERATORS: EngineSourceFilterOperator[] = [
   "not_equals",
 ];
 export const ENGINE_SORT_DIRECTIONS: EngineSortDirection[] = ["asc", "desc"];
+export const ENGINE_RESULT_SORT_MODES: EngineResultSortMode[] = ["value", "mapping_order"];
 export const ENGINE_SHEET_MODES: EngineSheetMode[] = ["single", "split_field"];
 export const ENGINE_SHEET_SPLIT_SCOPES: EngineSheetSplitScope[] = ["result_field", "source_field"];
 export const ENGINE_SHEET_VALUE_FILTER_MODES: EngineSheetValueFilterMode[] = [
@@ -382,7 +391,16 @@ export function createEmptyEngineResultSortField(): EngineResultSortField {
   return {
     id: crypto.randomUUID(),
     fieldName: "",
+    mode: "value",
+    mappingGroupId: "",
     direction: "asc",
+  };
+}
+
+export function createEmptyEngineResultSortConfig(): EngineResultSortConfig {
+  return {
+    enabled: false,
+    fields: [],
   };
 }
 
@@ -541,7 +559,7 @@ export function createEmptyEngineSheetTemplate(): EngineSheetTemplate {
 export function createEmptyEngineRuleResultConfig(): EngineRuleResultConfig {
   return {
     groupFields: [createEmptyEngineResultGroupField()],
-    sortFields: [],
+    sortConfig: createEmptyEngineResultSortConfig(),
     rowCompletion: createEmptyEngineResultCompletionConfig(),
     sheetConfig: createEmptyEngineSheetConfig(),
     totalRow: createEmptyEngineTotalRowConfig(),

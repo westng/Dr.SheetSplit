@@ -82,7 +82,7 @@ export function validateEngineRuleDraft(rule: EngineRuleDefinition): EngineRuleV
   const resultFields = rule.result.groupFields.filter(
     (field) => hasText(field.label) || hasText(field.sourceField) || hasText(field.sourceTableId),
   );
-  if (resultFields.length === 0) {
+  if (resultFields.length === 0 && rule.ruleType !== "single_table") {
     errors.push(t("engineRules.validation.resultGroupFieldRequired"));
   }
 
@@ -98,6 +98,18 @@ export function validateEngineRuleDraft(rule: EngineRuleDefinition): EngineRuleV
       errors.push(t("engineRules.validation.resultFieldSourceFieldRequired", { row }));
     }
   });
+
+  if (rule.result.sortConfig.enabled) {
+    rule.result.sortConfig.fields.forEach((field, index) => {
+      const row = index + 1;
+      if (!hasText(field.fieldName)) {
+        errors.push(t("engineRules.validation.resultSortFieldRequired", { row }));
+      }
+      if (field.mode === "mapping_order" && !hasText(field.mappingGroupId)) {
+        errors.push(t("engineRules.validation.resultSortMappingGroupRequired", { row }));
+      }
+    });
+  }
 
   if (rule.result.rowCompletion.enabled) {
     if (!hasText(rule.result.rowCompletion.targetField)) {
